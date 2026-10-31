@@ -443,9 +443,10 @@ def build_snapshot() -> dict:
         "watchlist": watch,
         "signalsAsOf": "2026-10-30 close",
         "backtestNote": (
-            "Structures from BS backtest Sep14–Oct30 @ $1k equal risk: "
+            "Standing rule: bullish ONLY from Weekly; bearish ONLY from Reversals "
+            "(Weekly BEARISH reads never used). Structures from BS backtest Sep14–Oct30 @ $1k equal risk: "
             "BULLISH★ → ATM call 1w; SQ+VC3★ → 1EM call debit 1w; SQ → ATM call 1w; "
-            "SQ+VC → skip/micro; BEARISH★ → ATM put 1w+PT; Reversals → ATM put (spread if ATM rich). "
+            "SQ+VC → skip/micro; Reversals → ATM put (spread if ATM rich). "
             "Modelled IV=RV20×1.15 — not live fills."
         ),
         "disclaimer": (

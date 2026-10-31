@@ -131,7 +131,6 @@
   <div class="tabs">
     <button class="tab active" data-tab="weekly">Weekly ★ Bullish</button>
     <button class="tab" data-tab="squeeze">Squeeze Setups</button>
-    <button class="tab" data-tab="bearish">Weekly ★ Bearish</button>
     <button class="tab" data-tab="reversal">Reversal Bearish</button>
     <button class="tab" data-tab="watch">Reversals Watch</button>
   </div>
@@ -140,7 +139,6 @@
 
   <section class="panel active" id="panel-weekly"></section>
   <section class="panel" id="panel-squeeze"></section>
-  <section class="panel" id="panel-bearish"></section>
   <section class="panel" id="panel-reversal"></section>
   <section class="panel" id="panel-watch"></section>
 
@@ -283,7 +281,6 @@ async function refresh() {
     $("hint").textContent = data.disclaimer;
     $("panel-weekly").innerHTML = (data.weeklyBullish || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No bullish ★ cards</div>";
     $("panel-squeeze").innerHTML = (data.weeklySqueeze || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No squeeze cards</div>";
-    $("panel-bearish").innerHTML = (data.weeklyBearishStar || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No weekly bearish ★</div>";
     $("panel-reversal").innerHTML = (data.reversalBearish || []).map(r => signalCard(r, "reversal")).join("");
     $("panel-watch").innerHTML = watchTable(data.watchlist || []);
     $("errors").textContent = (data.errors && data.errors.length) ? ("Yahoo partial errors: " + data.errors.join(" · ")) : "";
