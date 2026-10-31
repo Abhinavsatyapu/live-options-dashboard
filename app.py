@@ -146,7 +146,7 @@ class YahooClient:
             try:
                 r = self._session.get(f"{host}/v1/test/getcrumb", timeout=12)
                 if r.status_code == 429:
-                    self._mark_backoff(60.0)
+                    self._mark_backoff(25.0)
                     last_err = RuntimeError("crumb 429")
                     continue
                 if not r.ok:
@@ -165,11 +165,17 @@ class YahooClient:
 
     def ensure_auth(self) -> str:
         with self._lock:
-            if not self._crumb or (time.time() - self._crumb_ts) > 2 * 3600:
-                try:
-                    self._refresh_auth()
-                except Exception:
-                    pass
+            # Refresh if missing/expired; allow refresh even during backoff at most every 20s
+            need = (not self._crumb) or ((time.time() - self._crumb_ts) > 2 * 3600)
+            if need:
+                # throttle refresh attempts while rate-limited
+                last_try = getattr(self, "_crumb_try_ts", 0.0)
+                if (time.time() - last_try) >= 20.0 or not self._in_backoff():
+                    self._crumb_try_ts = time.time()
+                    try:
+                        self._refresh_auth()
+                    except Exception:
+                        pass
             return self._crumb or ""
 
     def _get_json(self, path: str, params: Optional[dict] = None, need_crumb: bool = True) -> Any:
@@ -181,8 +187,9 @@ class YahooClient:
                 crumb = self.ensure_auth()
                 if crumb:
                     params["crumb"] = crumb
-                elif self._in_backoff():
-                    raise RuntimeError("Yahoo crumb unavailable (backoff)")
+                else:
+                    # Try once without crumb; many edges still 401, then refresh
+                    params.pop("crumb", None)
             host = self._hosts[(self._host_i + attempt) % len(self._hosts)]
             url = f"{host}{path}"
             r = self._session.get(url, params=params, timeout=18)
@@ -306,6 +313,9 @@ class YahooClient:
                 pass
 
         with self._lock:
+            if out:
+                # Successful v8 batch — lift crumb/quote backoff so chains can retry
+                self._backoff_until = min(self._backoff_until, time.time())
             for s, q in out.items():
                 self._last_good_quotes[s] = q
             # Fill holes from last-good
