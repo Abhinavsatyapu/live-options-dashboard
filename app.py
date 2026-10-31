@@ -118,22 +118,24 @@ class YahooClient:
                 try:
                     self._refresh_auth()
                 except Exception:
-                    if self._crumb:
-                        return self._crumb
-                    raise
-            assert self._crumb
-            return self._crumb
+                    pass
+            return self._crumb or ""
 
     def _get(self, url: str, params: Optional[dict] = None) -> Any:
         crumb = self.ensure_auth()
         p = dict(params or {})
-        p["crumb"] = crumb
-        r = self._session.get(url, params=p, timeout=20)
-        if r.status_code == 401:
-            with self._lock:
-                self._refresh_auth()
-                crumb = self._crumb
+        if crumb:
             p["crumb"] = crumb
+        r = self._session.get(url, params=p, timeout=20)
+        if r.status_code in (401, 429):
+            with self._lock:
+                try:
+                    self._refresh_auth()
+                except Exception:
+                    pass
+                crumb = self._crumb or ""
+            if crumb:
+                p["crumb"] = crumb
             r = self._session.get(url, params=p, timeout=20)
         r.raise_for_status()
         return r.json()
@@ -460,10 +462,14 @@ def build_snapshot() -> dict:
         set([p["symbol"] for p in WEEKLY_BULLISH + REVERSAL_BEARISH] + watch_syms + ["SPY"])
     )
 
-    quotes = yahoo.quotes(all_quote_syms)
+    errors: list[str] = []
+    try:
+        quotes = yahoo.quotes(all_quote_syms)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"quotes: {e}")
+        quotes = {}
 
     chains: dict[tuple[str, str], tuple] = {}
-    errors: list[str] = []
     for sym, exp in opt_jobs:
         try:
             raw = yahoo.options_chain(sym, expiry_unix(exp))
