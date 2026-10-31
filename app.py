@@ -101,14 +101,26 @@ class YahooClient:
         r = self._session.get(
             "https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15
         )
+        if r.status_code == 429:
+            # Rate-limited: keep existing crumb if any; otherwise soft-fail
+            if self._crumb:
+                return
+            raise RuntimeError("Yahoo crumb rate-limited (429)")
         r.raise_for_status()
-        self._crumb = r.text.strip()
-        self._crumb_ts = time.time()
+        crumb = r.text.strip()
+        if crumb and "html" not in crumb.lower():
+            self._crumb = crumb
+            self._crumb_ts = time.time()
 
     def ensure_auth(self) -> str:
         with self._lock:
             if not self._crumb or (time.time() - self._crumb_ts) > 3600:
-                self._refresh_auth()
+                try:
+                    self._refresh_auth()
+                except Exception:
+                    if self._crumb:
+                        return self._crumb
+                    raise
             assert self._crumb
             return self._crumb
 
