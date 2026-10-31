@@ -924,12 +924,15 @@ def _parse_position_body(body: dict) -> dict:
 
 @app.on_event("startup")
 def _startup_db():
-    try:
-        from db import ensure_schema, database_url
-        if database_url():
-            ensure_schema()
-    except Exception as e:  # noqa: BLE001
-        print(f"[startup] db schema skip: {e}")
+    def _run():
+        try:
+            from db import ensure_schema, database_url
+            if database_url():
+                ensure_schema()
+        except Exception as e:  # noqa: BLE001
+            print(f"[startup] db schema skip: {e}")
+    # Neon can be unreachable from some networks — never block boot
+    threading.Thread(target=_run, daemon=True).start()
 
 
 @app.get("/api/positions/defaults")

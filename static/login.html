@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Sign in · Live Options Plan</title>
+<title>Sign in · Options Terminal</title>
 <style>
   :root {
     --bg: #0b0f14;
@@ -14,63 +14,92 @@
     --muted: #8b9bb4;
     --blue: #5b9cff;
     --red: #ff6b7a;
+    --green: #3dd68c;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; min-height: 100%;
-    background: var(--bg); color: var(--text);
+    background:
+      radial-gradient(1200px 600px at 10% -10%, #152033 0%, transparent 55%),
+      radial-gradient(900px 500px at 110% 10%, #1a1520 0%, transparent 50%),
+      var(--bg);
+    color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 16px; line-height: 1.4;
+    font-size: 16px; line-height: 1.45;
     -webkit-text-size-adjust: 100%;
   }
   .wrap {
     min-height: 100vh; min-height: 100dvh;
     display: flex; align-items: center; justify-content: center;
-    padding: 24px 16px;
+    padding: 28px 18px;
   }
   .card {
-    width: 100%; max-width: 400px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
-    padding: 28px 24px 24px;
-    box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+    width: 100%; max-width: 420px;
+    background: rgba(18,24,33,0.92);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 30px 26px 26px;
+    box-shadow: 0 18px 50px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04);
+    backdrop-filter: blur(8px);
   }
-  h1 { font-size: 1.35rem; margin: 0 0 6px; font-weight: 700; letter-spacing: -0.02em; }
-  .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 22px; }
-  label { display: block; color: var(--muted); font-size: 12px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+  .brand {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  }
+  .mark {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: linear-gradient(135deg, #3dd68c, #5b9cff);
+    box-shadow: 0 0 0 1px rgba(91,156,255,0.35);
+  }
+  h1 { font-size: 1.35rem; margin: 0; font-weight: 750; letter-spacing: -0.03em; }
+  .sub { color: var(--muted); font-size: 0.92rem; margin: 8px 0 22px; }
+  label {
+    display: block; color: var(--muted); font-size: 12px; font-weight: 650;
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;
+  }
   input {
     width: 100%; background: var(--panel2); border: 1px solid var(--border);
-    color: var(--text); border-radius: 10px; padding: 14px 14px;
-    font-size: 16px; /* iOS avoids zoom */
-    margin-bottom: 14px; outline: none;
+    color: var(--text); border-radius: 11px; padding: 14px 14px;
+    font-size: 16px; margin-bottom: 14px; outline: none;
+    min-height: 48px; transition: border-color .15s ease, box-shadow .15s ease;
   }
-  input:focus { border-color: var(--blue); }
+  input:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(91,156,255,0.22);
+  }
   button {
-    width: 100%; margin-top: 6px; min-height: 48px;
-    background: var(--blue); color: #061018; border: none; border-radius: 10px;
-    font-size: 1rem; font-weight: 700; cursor: pointer;
+    width: 100%; margin-top: 8px; min-height: 48px;
+    background: linear-gradient(180deg, #6aa8ff, #4b8ef0);
+    color: #061018; border: none; border-radius: 11px;
+    font-size: 1rem; font-weight: 750; cursor: pointer;
+    transition: transform .08s ease, opacity .15s ease;
   }
-  button:active { opacity: 0.9; }
+  button:hover { filter: brightness(1.05); }
+  button:active { transform: translateY(1px); }
+  button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
   button:disabled { opacity: 0.55; cursor: wait; }
   .err {
-    background: #3d1e24; color: var(--red); border: 1px solid #5a2a2a;
+    background: #3d1e24; color: #ffb4b4; border: 1px solid #5a2a2a;
     border-radius: 10px; padding: 10px 12px; margin-bottom: 14px;
     font-size: 0.9rem; display: none;
   }
   .err.show { display: block; }
+  .foot {
+    margin-top: 16px; color: var(--muted); font-size: 11px; text-align: center;
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <form class="card" id="form" method="post" action="/login" autocomplete="on">
-    <h1>Live Options Plan</h1>
-    <div class="sub">Sign in to view the dashboard</div>
-    <div class="err" id="err"></div>
+    <div class="brand"><div class="mark" aria-hidden="true"></div><h1>Options Terminal</h1></div>
+    <div class="sub">Sign in to view live Weekly ★ / Reversal plans</div>
+    <div class="err" id="err" role="alert"></div>
     <label for="username">Username</label>
     <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required />
     <label for="password">Password</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required />
     <button type="submit" id="btn">Sign in</button>
+    <div class="foot">Private dashboard · no order placement</div>
   </form>
 </div>
 <script>
