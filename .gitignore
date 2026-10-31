@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+/workspace/.secrets/
+earnings_cache.json
+exit_alert_state.json
+.secrets/

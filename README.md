@@ -33,3 +33,11 @@ Open http://localhost:8000/login
 
 Free web service: build `pip install -r requirements.txt`, start `uvicorn app:app --host 0.0.0.0 --port $PORT`.
 Set the three env vars above in the Render dashboard (never commit secrets; repo is public).
+
+
+## My Positions + exit alerts + earnings
+
+- Tab **My Positions**: admin (`abhinav`) can add/edit/close; guest is read-only.
+- Persistence: Neon Postgres via `DATABASE_URL` (set on Render; never commit).
+- Exit monitor: run `python /workspace/check_exits.py` (or `python check_exits.py` from this repo with `DATABASE_URL`). JSON stdout; dedupe state in `/workspace/exit_alert_state.json`.
+- Earnings-before-expiry badges on signal/position cards (Yahoo, cached daily).

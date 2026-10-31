@@ -32,6 +32,14 @@ R_RATE = 0.05
 # Signals as of Fri 2026-10-30 close — structures from Sep14–Oct30 options backtest
 from trade_config import WEEKLY_SIGNALS, REVERSAL_BEARISH
 
+from positions_live import (
+    enrich_positions,
+    parse_occ,
+    default_rules,
+    load_exit_state,
+    kinds_for_ticker,
+)
+
 _EARLY_PATH = Path(__file__).parent / "early_current.json"
 _EARLY_RULES_PATH = Path(__file__).parent / "early_rules.json"
 
@@ -485,6 +493,56 @@ def build_snapshot() -> dict:
 
     spy_q = quotes.get("SPY") or {}
     now = datetime.now(timezone.utc)
+
+    # Earnings badges + exit-alert badges on signal / early cards
+    try:
+        from earnings import earnings_before_expiry
+    except Exception:
+        earnings_before_expiry = None  # type: ignore
+    exit_state = load_exit_state()
+
+    def _attach_badges(rows: list, sym_key: str = "symbol") -> list:
+        out = []
+        for r in rows:
+            rr = dict(r)
+            sym = rr.get(sym_key) or rr.get("sym") or ""
+            exp = rr.get("expiry") or (rr.get("plan") or {}).get("expiry")
+            if earnings_before_expiry and sym and exp:
+                try:
+                    info = earnings_before_expiry(sym, exp)
+                    rr["earnings"] = info
+                    rr["earningsBadge"] = info.get("badge")
+                    if info.get("beforeExpiry"):
+                        rr["earningsFlag"] = True
+                except Exception:
+                    rr["earnings"] = None
+            kinds = kinds_for_ticker(str(sym), exit_state)
+            # also match open position alert kinds for this ticker
+            rr["alertKinds"] = kinds
+            out.append(rr)
+        return out
+
+    early = enrich_early(load_early(), quotes, chains)
+    # Downgrade / flag Early ★ when earnings before expiry
+    early_out = []
+    for e in early:
+        ee = dict(e)
+        plan = ee.get("plan") or {}
+        exp = plan.get("expiry")
+        sym = ee.get("sym") or ""
+        if earnings_before_expiry and sym and exp:
+            try:
+                info = earnings_before_expiry(sym, exp)
+                ee["earnings"] = info
+                ee["earningsBadge"] = info.get("badge")
+                if info.get("beforeExpiry"):
+                    ee["earningsFlag"] = True
+                    ee["tierNote"] = "EARNINGS before expiry — size down / skip"
+            except Exception:
+                pass
+        ee["alertKinds"] = kinds_for_ticker(str(sym), exit_state)
+        early_out.append(ee)
+
     return {
         "ok": True,
         "updatedAt": now.isoformat(),
@@ -495,12 +553,12 @@ def build_snapshot() -> dict:
             "price": underlying_price(spy_q),
             "changePct": pct_change(spy_q),
         },
-        "weeklyBullish": weekly_bullish,
-        "weeklySqueeze": weekly_squeeze,
-        "weeklyBearishStar": weekly_bearish,
-        "reversalBearish": reversals,
+        "weeklyBullish": _attach_badges(weekly_bullish),
+        "weeklySqueeze": _attach_badges(weekly_squeeze),
+        "weeklyBearishStar": _attach_badges(weekly_bearish),
+        "reversalBearish": _attach_badges(reversals),
         "watchlist": watch,
-        "earlySureShots": enrich_early(load_early(), quotes, chains),
+        "earlySureShots": early_out,
         "earlyRules": (load_early().get("rules") or {}),
         "signalsAsOf": "2026-10-30 close",
         "backtestNote": (
@@ -735,6 +793,259 @@ def index():
 
 # Do not mount /static publicly — login.html & index.html are served via routes.
 # (Prevents unauthenticated fetch of /static/index.html)
+
+
+
+def _require_admin(request: Request):
+    info = _session_user(request)
+    if not info:
+        return None, JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    if info.get("role") != "admin":
+        return None, JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+    return info, None
+
+
+def _parse_position_body(body: dict) -> dict:
+    """Normalize position form/JSON into DB fields; prefill rulebook defaults."""
+    ticker = (body.get("ticker") or "").strip().upper()
+    signal_type = (body.get("signal_type") or body.get("signalType") or "WEEKLY").strip()
+    side = (body.get("side") or "").strip().lower()
+    structure = (body.get("structure") or "atm").strip().lower()
+    long_occ = (body.get("long_occ") or body.get("longOcc") or "").strip().upper().replace(" ", "")
+    short_raw = body.get("short_occ") or body.get("shortOcc") or ""
+    short_occ = short_raw.strip().upper().replace(" ", "") or None
+    quantity = int(body.get("quantity") or 1)
+    fill_debit = float(body.get("fill_debit") or body.get("fillDebit") or 0)
+    entry_date = (body.get("entry_date") or body.get("entryDate") or date.today().isoformat())[:10]
+    notes = body.get("notes")
+    if not side:
+        side = "put" if ("REV" in signal_type.upper() or "ABSORB" in signal_type.upper()) else "call"
+    rules = default_rules(signal_type, side, structure if short_occ else "atm")
+    profit_target_pct = body.get("profit_target_pct", body.get("profitTargetPct", rules["profit_target_pct"]))
+    time_exit = body.get("time_exit") or body.get("timeExit") or rules["time_exit"]
+    stop_underlying = body.get("stop_underlying", body.get("stopUnderlying"))
+    cover_level = body.get("cover_level", body.get("coverLevel"))
+    expiry = body.get("expiry")
+    meta = parse_occ(long_occ)
+    if meta and not expiry:
+        expiry = meta["expiry_str"]
+    if meta and not side:
+        side = "call" if meta["cp"] == "C" else "put"
+    if short_occ and structure == "atm":
+        structure = "spread"
+    return {
+        "ticker": ticker,
+        "signal_type": signal_type,
+        "side": side,
+        "structure": structure,
+        "long_occ": long_occ,
+        "short_occ": short_occ,
+        "quantity": quantity,
+        "fill_debit": fill_debit,
+        "entry_date": entry_date,
+        "expiry": expiry,
+        "stop_underlying": float(stop_underlying) if stop_underlying not in (None, "") else None,
+        "profit_target_pct": float(profit_target_pct),
+        "time_exit": time_exit,
+        "cover_level": float(cover_level) if cover_level not in (None, "") else None,
+        "notes": notes,
+        "stop_hint": rules["stop_hint"],
+    }
+
+
+@app.on_event("startup")
+def _startup_db():
+    try:
+        from db import ensure_schema, database_url
+        if database_url():
+            ensure_schema()
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] db schema skip: {e}")
+
+
+@app.get("/api/positions/defaults")
+def positions_defaults(request: Request):
+    info = _session_user(request)
+    if not info:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    st = (request.query_params.get("signal_type") or "WEEKLY").strip()
+    side = (request.query_params.get("side") or "").strip().lower()
+    structure = (request.query_params.get("structure") or "atm").strip().lower()
+    return {"ok": True, "defaults": default_rules(st, side or ("put" if "REV" in st.upper() else "call"), structure)}
+
+
+@app.get("/api/positions")
+def positions_list(request: Request):
+    info = _session_user(request)
+    if not info:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    status = request.query_params.get("status", "open")
+    if status == "all":
+        status = None
+    try:
+        from db import list_positions
+        rows = list_positions(status)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e), "positions": [], "summary": {}}, status_code=503)
+    tickers = sorted({r["ticker"].upper() for r in rows})
+    quotes = yahoo.quotes(tickers) if tickers else {}
+    # week closed for WTD realised
+    closed_week = []
+    try:
+        from db import list_positions as lp
+        all_closed = lp("closed")
+        # Monday of current week ET
+        today = datetime.now(ET).date()
+        week_start = today.fromordinal(today.toordinal() - today.weekday())
+        for c in all_closed:
+            ca = c.get("closed_at") or c.get("updated_at") or ""
+            try:
+                d = date.fromisoformat(str(ca)[:10])
+                if d >= week_start:
+                    closed_week.append(c)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    enriched = enrich_positions(yahoo, quotes, rows, closed_week=closed_week)
+    # earnings badges on positions
+    try:
+        from earnings import earnings_before_expiry
+        for p in enriched["positions"]:
+            info_e = earnings_before_expiry(p["ticker"], p.get("expiry"))
+            p["earnings"] = info_e
+            p["earningsBadge"] = info_e.get("badge")
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "role": info["role"],
+        "canEdit": info["role"] == "admin",
+        **enriched,
+    }
+
+
+@app.post("/api/positions")
+async def positions_create(request: Request):
+    _, err = _require_admin(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    data = _parse_position_body(body)
+    if not data["ticker"] or not data["long_occ"] or data["fill_debit"] <= 0:
+        return JSONResponse({"ok": False, "error": "ticker, long_occ, fill_debit required"}, status_code=400)
+    try:
+        from db import create_position
+        row = create_position(data)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+    return {"ok": True, "position": row}
+
+
+@app.patch("/api/positions/{pid}")
+async def positions_update(pid: int, request: Request):
+    _, err = _require_admin(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    mapping = {
+        "ticker": "ticker", "signal_type": "signal_type", "signalType": "signal_type",
+        "side": "side", "structure": "structure",
+        "long_occ": "long_occ", "longOcc": "long_occ",
+        "short_occ": "short_occ", "shortOcc": "short_occ",
+        "quantity": "quantity",
+        "fill_debit": "fill_debit", "fillDebit": "fill_debit",
+        "entry_date": "entry_date", "entryDate": "entry_date",
+        "expiry": "expiry",
+        "stop_underlying": "stop_underlying", "stopUnderlying": "stop_underlying",
+        "profit_target_pct": "profit_target_pct", "profitTargetPct": "profit_target_pct",
+        "time_exit": "time_exit", "timeExit": "time_exit",
+        "cover_level": "cover_level", "coverLevel": "cover_level",
+        "notes": "notes", "status": "status",
+        "close_reason": "close_reason", "closeReason": "close_reason",
+        "close_pnl": "close_pnl", "closePnl": "close_pnl",
+    }
+    patch = {}
+    for k, v in body.items():
+        if k not in mapping:
+            continue
+        dest = mapping[k]
+        if dest == "quantity":
+            patch[dest] = int(v)
+        elif dest in ("fill_debit", "stop_underlying", "profit_target_pct", "cover_level", "close_pnl"):
+            patch[dest] = float(v) if v not in (None, "") else None
+        elif dest == "side":
+            patch[dest] = str(v).strip().lower()
+        elif dest == "structure":
+            patch[dest] = str(v).strip().lower()
+        elif dest == "signal_type":
+            patch[dest] = str(v).strip()
+        elif dest in ("ticker", "long_occ"):
+            patch[dest] = str(v).strip().upper().replace(" ", "")
+        elif dest == "short_occ":
+            patch[dest] = str(v).strip().upper().replace(" ", "") or None
+        else:
+            patch[dest] = v
+    try:
+        from db import update_position
+        row = update_position(pid, patch)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True, "position": row}
+
+
+
+@app.post("/api/positions/{pid}/close")
+async def positions_close(pid: int, request: Request):
+    _, err = _require_admin(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    patch = {
+        "status": "closed",
+        "close_reason": body.get("close_reason") or body.get("closeReason") or "manual",
+        "close_pnl": body.get("close_pnl", body.get("closePnl")),
+    }
+    if patch["close_pnl"] is not None:
+        try:
+            patch["close_pnl"] = float(patch["close_pnl"])
+        except Exception:
+            patch["close_pnl"] = None
+    try:
+        from db import update_position
+        row = update_position(pid, patch)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True, "position": row}
+
+
+@app.delete("/api/positions/{pid}")
+def positions_delete(pid: int, request: Request):
+    _, err = _require_admin(request)
+    if err:
+        return err
+    try:
+        from db import delete_position
+        ok = delete_position(pid)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True}
+
 
 
 if __name__ == "__main__":

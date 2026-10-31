@@ -4,3 +4,4 @@ requests==2.32.3
 tzdata
 itsdangerous==2.2.0
 python-multipart==0.0.20
+psycopg[binary]>=3.2
