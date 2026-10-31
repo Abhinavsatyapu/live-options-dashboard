@@ -28,27 +28,7 @@ def parse_occ(occ: str) -> Optional[dict]:
     }
 
 
-def option_mid_yahoo(yahoo, occ: str) -> Optional[float]:
-    meta = parse_occ(occ)
-    if not meta:
-        return None
-    exp = meta["expiry"]
-    exp_unix = int(datetime(exp.year, exp.month, exp.day, 16, 0, tzinfo=ET).timestamp())
-    try:
-        chain = yahoo.options_chain(meta["root"], exp_unix)
-    except Exception:
-        return None
-    try:
-        result = (chain.get("optionChain") or {}).get("result") or []
-        if not result:
-            return None
-        opts = result[0].get("options") or []
-        if not opts:
-            return None
-        legs = opts[0].get("calls" if meta["cp"] == "C" else "puts") or []
-    except Exception:
-        return None
-    strike = meta["strike"]
+def _mid_from_legs(legs: list, strike: float) -> Optional[float]:
     best = None
     for leg in legs:
         try:
@@ -58,6 +38,7 @@ def option_mid_yahoo(yahoo, occ: str) -> Optional[float]:
         except Exception:
             continue
     if not best:
+        # also match by contractSymbol when present
         return None
     bid, ask, last = best.get("bid"), best.get("ask"), best.get("lastPrice")
     try:
@@ -67,6 +48,59 @@ def option_mid_yahoo(yahoo, occ: str) -> Optional[float]:
             return float(last)
     except Exception:
         return None
+    return None
+
+
+def option_mid_yahoo(yahoo, occ: str) -> Optional[float]:
+    meta = parse_occ(occ)
+    if not meta:
+        return None
+    exp = meta["expiry"]
+    strike = meta["strike"]
+    # Yahoo expirationDates are often midnight UTC; OCC calendar day can be ±1 vs listed.
+    candidates = []
+    try:
+        bare = yahoo._get(  # type: ignore[attr-defined]
+            f"https://query2.finance.yahoo.com/v7/finance/options/{meta['root']}"
+        )
+        exps = ((bare.get("optionChain") or {}).get("result") or [{}])[0].get("expirationDates") or []
+        for u in exps:
+            d = datetime.fromtimestamp(int(u), tz=ET).date()
+            if abs((d - exp).days) <= 1:
+                candidates.append(int(u))
+    except Exception:
+        candidates = []
+    if not candidates:
+        candidates = [int(datetime(exp.year, exp.month, exp.day, 16, 0, tzinfo=ET).timestamp())]
+    for exp_unix in candidates:
+        try:
+            chain = yahoo.options_chain(meta["root"], exp_unix)
+        except Exception:
+            continue
+        try:
+            result = (chain.get("optionChain") or {}).get("result") or []
+            if not result:
+                continue
+            opts = result[0].get("options") or []
+            if not opts:
+                continue
+            legs = opts[0].get("calls" if meta["cp"] == "C" else "puts") or []
+        except Exception:
+            continue
+        # Prefer exact OCC contractSymbol match
+        for leg in legs:
+            if str(leg.get("contractSymbol") or "").upper() == occ.upper():
+                bid, ask, last = leg.get("bid"), leg.get("ask"), leg.get("lastPrice")
+                try:
+                    if bid is not None and ask is not None and float(bid) > 0 and float(ask) > 0:
+                        return (float(bid) + float(ask)) / 2.0
+                    if last is not None:
+                        return float(last)
+                except Exception:
+                    pass
+        mid = _mid_from_legs(legs, strike)
+        if mid is not None:
+            return mid
     return None
 
 

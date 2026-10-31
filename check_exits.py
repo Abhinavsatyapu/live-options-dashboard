@@ -133,37 +133,55 @@ def option_mid_from_occ(session, occ: str) -> Optional[float]:
         exp = date(year, mm, dd)
     except Exception:
         return None
-    # unix expiry noon ET approx
-    exp_dt = datetime(year, mm, dd, 16, 0, tzinfo=ET)
-    exp_unix = int(exp_dt.timestamp())
+    # Yahoo expirationDates often differ ±1 calendar day from OCC YYMMDD
     try:
-        r = session.get(
+        r0 = session.get(
             f"https://query2.finance.yahoo.com/v7/finance/options/{root}",
-            params={"date": exp_unix},
             timeout=20,
         )
-        if not r.ok:
+        if not r0.ok:
             return None
-        result = (r.json().get("optionChain") or {}).get("result") or []
-        if not result:
-            return None
-        opts = result[0].get("options") or []
-        if not opts:
-            return None
-        legs = opts[0].get("calls" if cp == "C" else "puts") or []
-        best = None
-        for leg in legs:
-            if abs(float(leg.get("strike", 0)) - strike) < 1e-6:
-                best = leg
-                break
-        if not best:
-            return None
-        bid, ask = best.get("bid"), best.get("ask")
-        last = best.get("lastPrice")
-        if bid is not None and ask is not None and float(bid) > 0 and float(ask) > 0:
-            return (float(bid) + float(ask)) / 2.0
-        if last is not None:
-            return float(last)
+        exps = ((r0.json().get("optionChain") or {}).get("result") or [{}])[0].get("expirationDates") or []
+        candidates = []
+        for u in exps:
+            d = datetime.fromtimestamp(int(u), tz=ET).date()
+            if abs((d - exp).days) <= 1:
+                candidates.append(int(u))
+        if not candidates:
+            candidates = [int(datetime(year, mm, dd, 16, 0, tzinfo=ET).timestamp())]
+        for exp_unix in candidates:
+            r = session.get(
+                f"https://query2.finance.yahoo.com/v7/finance/options/{root}",
+                params={"date": exp_unix},
+                timeout=20,
+            )
+            if not r.ok:
+                continue
+            result = (r.json().get("optionChain") or {}).get("result") or []
+            if not result:
+                continue
+            opts = result[0].get("options") or []
+            if not opts:
+                continue
+            legs = opts[0].get("calls" if cp == "C" else "puts") or []
+            best = None
+            for leg in legs:
+                if str(leg.get("contractSymbol") or "").upper() == occ.replace(" ", "").upper():
+                    best = leg
+                    break
+            if best is None:
+                for leg in legs:
+                    if abs(float(leg.get("strike", 0)) - strike) < 1e-6:
+                        best = leg
+                        break
+            if not best:
+                continue
+            bid, ask = best.get("bid"), best.get("ask")
+            last = best.get("lastPrice")
+            if bid is not None and ask is not None and float(bid) > 0 and float(ask) > 0:
+                return (float(bid) + float(ask)) / 2.0
+            if last is not None:
+                return float(last)
     except Exception:
         return None
     return None
@@ -315,9 +333,18 @@ def main() -> int:
 
     import requests
     sess = requests.Session()
-    sess.headers.update({"User-Agent": "Mozilla/5.0"})
+    sess.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    })
     try:
         sess.get("https://fc.yahoo.com", timeout=10)
+        cr = sess.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        crumb = cr.text.strip() if cr.ok else ""
+        if crumb and "html" not in crumb.lower():
+            sess.params = {"crumb": crumb}
     except Exception:
         pass
 
