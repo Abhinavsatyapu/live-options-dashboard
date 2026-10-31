@@ -1,0 +1,639 @@
+"""Live options plan dashboard — Yahoo Finance quotes + option chains."""
+from __future__ import annotations
+
+import math
+import threading
+import time
+from datetime import datetime, timezone, date
+from pathlib import Path
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+import requests
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+IST = ZoneInfo("Asia/Calcutta")
+ET = ZoneInfo("America/New_York")
+CACHE_TTL = 4.0
+R_RATE = 0.05
+
+# Signals as of Fri 2026-10-30 close
+WEEKLY_BULLISH = [
+    {
+        "symbol": "WDC",
+        "tag": "★ BULLISH",
+        "note": "Recommended",
+        "recommended": True,
+        "skip": False,
+        "expiry": "2026-11-13",
+        "long_occ": "WDC261113C00365000",
+        "short_occ": "WDC261113C00380000",
+        "long_strike": 365.0,
+        "short_strike": 380.0,
+        "debit": 4.25,
+        "size": 3,
+        "side": "call",
+    },
+    {
+        "symbol": "CEG",
+        "tag": "★ squeeze+VC3",
+        "note": "Recommended",
+        "recommended": True,
+        "skip": False,
+        "expiry": "2026-11-13",
+        "long_occ": "CEG261113C00262500",
+        "short_occ": "CEG261113C00270000",
+        "long_strike": 262.5,
+        "short_strike": 270.0,
+        "debit": 3.10,
+        "size": 4,
+        "side": "call",
+    },
+    {
+        "symbol": "PURR",
+        "tag": "★ BULLISH (IV ~108%)",
+        "note": "Spread only",
+        "recommended": True,
+        "skip": False,
+        "expiry": "2026-11-13",
+        "long_occ": "PURR261113C00011000",
+        "short_occ": "PURR261113C00013000",
+        "long_strike": 11.0,
+        "short_strike": 13.0,
+        "debit": 0.55,
+        "size": 1,
+        "side": "call",
+    },
+    {
+        "symbol": "LRCX",
+        "tag": "squeeze+VC",
+        "note": "Secondary",
+        "recommended": False,
+        "skip": False,
+        "expiry": "2026-11-13",
+        "long_occ": "LRCX261113C00240000",
+        "short_occ": "LRCX261113C00250000",
+        "long_strike": 240.0,
+        "short_strike": 250.0,
+        "debit": 4.10,
+        "size": 1,
+        "side": "call",
+    },
+    {
+        "symbol": "GEV",
+        "tag": "squeeze+VC",
+        "note": "Secondary",
+        "recommended": False,
+        "skip": False,
+        "expiry": "2026-11-20",
+        "long_occ": "GEV261120C00860000",
+        "short_occ": "GEV261120C00890000",
+        "long_strike": 860.0,
+        "short_strike": 890.0,
+        "debit": 12.60,
+        "size": 1,
+        "side": "call",
+    },
+    {
+        "symbol": "ABT",
+        "tag": "SKIP",
+        "note": "Skip",
+        "recommended": False,
+        "skip": True,
+        "expiry": "2026-11-13",
+        "long_occ": "ABT261113C00106000",
+        "short_occ": "ABT261113C00110000",
+        "long_strike": 106.0,
+        "short_strike": 110.0,
+        "debit": 1.65,
+        "size": 0,
+        "side": "call",
+    },
+]
+
+REVERSAL_BEARISH = [
+    {
+        "symbol": "SMR",
+        "tag": "★ absorbed calls, full size",
+        "note": "Enter ONLY when underlying breaks below trigger",
+        "expiry": "2026-11-20",
+        "long_occ": "SMR261120P00005500",
+        "short_occ": "SMR261120P00004500",
+        "long_strike": 5.5,
+        "short_strike": 4.5,
+        "debit": 0.38,
+        "size": 1,
+        "side": "put",
+        "trigger": 5.42,
+        "sl": 5.65,
+        "already_in": False,
+        "cover_above": None,
+    },
+    {
+        "symbol": "GOOG",
+        "tag": "",
+        "note": "Enter ONLY when underlying breaks below trigger",
+        "expiry": "2026-11-20",
+        "long_occ": "GOOG261120P00275000",
+        "short_occ": "GOOG261120P00265000",
+        "long_strike": 275.0,
+        "short_strike": 265.0,
+        "debit": 3.125,
+        "size": 1,
+        "side": "put",
+        "trigger": 275.35,
+        "sl": 281.86,
+        "already_in": False,
+        "cover_above": None,
+    },
+    {
+        "symbol": "DDOG",
+        "tag": "",
+        "note": "Enter ONLY when underlying breaks below trigger",
+        "expiry": "2026-11-20",
+        "long_occ": "DDOG261120P00230000",
+        "short_occ": "DDOG261120P00215000",
+        "long_strike": 230.0,
+        "short_strike": 215.0,
+        "debit": 6.60,
+        "size": 1,
+        "side": "put",
+        "trigger": 228.56,
+        "sl": 253.87,
+        "already_in": False,
+        "cover_above": None,
+    },
+    {
+        "symbol": "MRVL",
+        "tag": "",
+        "note": "Enter ONLY when underlying breaks below trigger",
+        "expiry": "2026-11-20",
+        "long_occ": "MRVL261120P00190000",
+        "short_occ": "MRVL261120P00180000",
+        "long_strike": 190.0,
+        "short_strike": 180.0,
+        "debit": 3.725,
+        "size": 1,
+        "side": "put",
+        "trigger": 190.15,
+        "sl": 207.61,
+        "already_in": False,
+        "cover_above": None,
+    },
+    {
+        "symbol": "NOW",
+        "tag": "already IN short from 114.27 (half size)",
+        "note": "Cover if > 109.90; hedge/expression put spread",
+        "expiry": "2026-11-20",
+        "long_occ": "NOW261120P00105000",
+        "short_occ": "NOW261120P00100000",
+        "long_strike": 105.0,
+        "short_strike": 100.0,
+        "debit": 2.085,
+        "size": 1,
+        "side": "put",
+        "trigger": None,
+        "sl": None,
+        "already_in": True,
+        "entry": 114.27,
+        "cover_above": 109.90,
+    },
+]
+
+WATCHLIST = [
+    {"symbol": "AAOI", "low": 65.77, "high": 74.25},
+    {"symbol": "AAPL", "low": 334.35, "high": 349.19},
+    {"symbol": "AMAT", "low": 382.62, "high": 405.20},
+    {"symbol": "AMD", "low": 492.21, "high": 520.40},
+    {"symbol": "BMNR", "low": 19.60, "high": 20.77},
+    {"symbol": "CRCL", "low": 71.00, "high": 74.80},
+    {"symbol": "CRWD", "low": 245.15, "high": 264.90},
+    {"symbol": "CRWV", "low": 53.48, "high": 56.90},
+    {"symbol": "CVNA", "low": 66.43, "high": 69.84},
+    {"symbol": "GEV", "low": 844.08, "high": 886.07},
+    {"symbol": "HIMS", "low": 26.68, "high": 28.75},
+    {"symbol": "IBM", "low": 254.71, "high": 259.59},
+    {"symbol": "INOD", "low": 42.56, "high": 44.64},
+    {"symbol": "INTC", "low": 63.20, "high": 68.77},
+    {"symbol": "IONQ", "low": 28.55, "high": 30.37},
+    {"symbol": "MDB", "low": 341.16, "high": 371.49},
+    {"symbol": "NET", "low": 271.63, "high": 299.69},
+    {"symbol": "PLTR", "low": 180.81, "high": 193.95},
+    {"symbol": "QBTS", "low": 10.23, "high": 11.09},
+    {"symbol": "QCOM", "low": 161.72, "high": 176.17},
+    {"symbol": "RBLX", "low": 41.36, "high": 47.76},
+    {"symbol": "RGTI", "low": 10.82, "high": 11.52},
+    {"symbol": "SNDK", "low": 1115.16, "high": 1239.00},
+    {"symbol": "SQQQ", "low": 40.55, "high": 42.96},
+    {"symbol": "TER", "low": 266.36, "high": 284.16},
+]
+
+BANNER = {
+    "text": "SPY negative gamma (gex -0.75, structure COLLAPSED) — size down.",
+    "gex": -0.75,
+}
+
+
+class YahooClient:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._session = requests.Session()
+        self._session.headers.update({"User-Agent": UA})
+        self._crumb: Optional[str] = None
+        self._crumb_ts = 0.0
+
+    def _refresh_auth(self) -> None:
+        self._session.cookies.clear()
+        self._session.get("https://fc.yahoo.com", timeout=15)
+        r = self._session.get(
+            "https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15
+        )
+        r.raise_for_status()
+        self._crumb = r.text.strip()
+        self._crumb_ts = time.time()
+
+    def ensure_auth(self) -> str:
+        with self._lock:
+            if not self._crumb or (time.time() - self._crumb_ts) > 3600:
+                self._refresh_auth()
+            assert self._crumb
+            return self._crumb
+
+    def _get(self, url: str, params: Optional[dict] = None) -> Any:
+        crumb = self.ensure_auth()
+        p = dict(params or {})
+        p["crumb"] = crumb
+        r = self._session.get(url, params=p, timeout=20)
+        if r.status_code == 401:
+            with self._lock:
+                self._refresh_auth()
+                crumb = self._crumb
+            p["crumb"] = crumb
+            r = self._session.get(url, params=p, timeout=20)
+        r.raise_for_status()
+        return r.json()
+
+    def quotes(self, symbols: list[str]) -> dict[str, dict]:
+        if not symbols:
+            return {}
+        # batch in chunks of 40
+        out: dict[str, dict] = {}
+        for i in range(0, len(symbols), 40):
+            chunk = symbols[i : i + 40]
+            data = self._get(
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                {"symbols": ",".join(chunk)},
+            )
+            for q in data.get("quoteResponse", {}).get("result", []) or []:
+                sym = q.get("symbol")
+                if sym:
+                    out[sym] = q
+        return out
+
+    def options_chain(self, symbol: str, expiry_unix: int) -> dict:
+        return self._get(
+            f"https://query2.finance.yahoo.com/v7/finance/options/{symbol}",
+            {"date": expiry_unix},
+        )
+
+
+yahoo = YahooClient()
+_cache_lock = threading.Lock()
+_cache: dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def expiry_unix(expiry_str: str) -> int:
+    y, m, d = map(int, expiry_str.split("-"))
+    return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp())
+
+
+def years_to_expiry(expiry_str: str) -> float:
+    y, m, d = map(int, expiry_str.split("-"))
+    exp = datetime(y, m, d, 16, 0, tzinfo=ET)  # ~4pm ET expiration
+    now = datetime.now(timezone.utc)
+    secs = (exp - now).total_seconds()
+    return max(secs / (365.25 * 24 * 3600), 1e-6)
+
+
+def mid_price(opt: Optional[dict]) -> Optional[float]:
+    if not opt:
+        return None
+    bid = opt.get("bid")
+    ask = opt.get("ask")
+    last = opt.get("lastPrice")
+    if bid is not None and ask is not None and bid >= 0 and ask > 0:
+        return round((bid + ask) / 2.0, 4)
+    if last is not None and last > 0:
+        return float(last)
+    if bid is not None and bid > 0:
+        return float(bid)
+    return None
+
+
+def find_contract(options: list[dict], strike: float) -> Optional[dict]:
+    best = None
+    best_diff = 1e18
+    for o in options:
+        s = o.get("strike")
+        if s is None:
+            continue
+        diff = abs(float(s) - strike)
+        if diff < best_diff:
+            best_diff = diff
+            best = o
+    return best
+
+
+def find_atm(options: list[dict], spot: float) -> Optional[dict]:
+    if not options or spot is None:
+        return None
+    return min(options, key=lambda o: abs(float(o.get("strike") or 0) - spot))
+
+
+def norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def bs_delta(
+    S: float, K: float, T: float, r: float, sigma: float, side: str
+) -> Optional[float]:
+    if S <= 0 or K <= 0 or T <= 0 or sigma is None or sigma <= 0:
+        return None
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (
+            sigma * math.sqrt(T)
+        )
+        if side == "call":
+            return round(norm_cdf(d1), 4)
+        return round(norm_cdf(d1) - 1.0, 4)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
+
+
+def underlying_price(q: Optional[dict]) -> Optional[float]:
+    if not q:
+        return None
+    for key in (
+        "regularMarketPrice",
+        "postMarketPrice",
+        "preMarketPrice",
+        "bid",
+        "ask",
+    ):
+        v = q.get(key)
+        if v is not None and v > 0:
+            return float(v)
+    return None
+
+
+def pct_change(q: Optional[dict]) -> Optional[float]:
+    if not q:
+        return None
+    v = q.get("regularMarketChangePercent")
+    return float(v) if v is not None else None
+
+
+def chain_legs(chain_json: dict) -> tuple[Optional[dict], list[dict], list[dict]]:
+    try:
+        result = chain_json["optionChain"]["result"][0]
+    except (KeyError, IndexError, TypeError):
+        return None, [], []
+    quote = result.get("quote") or {}
+    opts = result.get("options") or []
+    if not opts:
+        return quote, [], []
+    calls = opts[0].get("calls") or []
+    puts = opts[0].get("puts") or []
+    return quote, calls, puts
+
+
+def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
+    side = plan["side"]
+    legs = calls if side == "call" else puts
+    spot = underlying_price(quote)
+    chg = pct_change(quote)
+    long_leg = find_contract(legs, plan["long_strike"])
+    short_leg = find_contract(legs, plan["short_strike"])
+    long_mid = mid_price(long_leg)
+    short_mid = mid_price(short_leg)
+    spread_mid = None
+    if long_mid is not None and short_mid is not None:
+        spread_mid = round(long_mid - short_mid, 4)
+
+    debit = plan["debit"]
+    width = abs(plan["short_strike"] - plan["long_strike"])
+    max_profit = round(width - debit, 4)
+    if side == "call":
+        breakeven = round(plan["long_strike"] + debit, 4)
+    else:
+        breakeven = round(plan["long_strike"] - debit, 4)
+
+    pnl_per = None
+    pnl_total = None
+    if spread_mid is not None:
+        pnl_per = round(spread_mid - debit, 4)
+        pnl_total = round(pnl_per * 100 * plan["size"], 2)
+
+    iv = None
+    if long_leg and long_leg.get("impliedVolatility") is not None:
+        iv = float(long_leg["impliedVolatility"])
+
+    T = years_to_expiry(plan["expiry"])
+    delta = None
+    if spot is not None and iv is not None:
+        delta = bs_delta(spot, plan["long_strike"], T, R_RATE, iv, side)
+
+    atm_leg = find_atm(legs, spot) if spot else None
+    atm = None
+    if atm_leg:
+        atm = {
+            "strike": atm_leg.get("strike"),
+            "bid": atm_leg.get("bid"),
+            "ask": atm_leg.get("ask"),
+            "last": atm_leg.get("lastPrice"),
+            "mid": mid_price(atm_leg),
+            "iv": atm_leg.get("impliedVolatility"),
+            "contractSymbol": atm_leg.get("contractSymbol"),
+        }
+
+    status = None
+    dist_trigger = None
+    dist_sl = None
+    if plan.get("already_in"):
+        status = "IN"
+        if plan.get("cover_above") is not None and spot is not None:
+            dist_trigger = round(spot - plan["cover_above"], 4)  # dist to cover
+    elif plan.get("trigger") is not None and spot is not None:
+        dist_trigger = round(spot - plan["trigger"], 4)
+        dist_sl = round(plan["sl"] - spot, 4) if plan.get("sl") else None
+        if spot < plan["trigger"]:
+            status = "TRIGGERED"
+        elif plan.get("sl") is not None and spot > plan["sl"]:
+            status = "STOPPED"
+        else:
+            status = "WAITING"
+
+    return {
+        **{k: plan[k] for k in plan},
+        "price": spot,
+        "changePct": chg,
+        "long": {
+            "bid": long_leg.get("bid") if long_leg else None,
+            "ask": long_leg.get("ask") if long_leg else None,
+            "last": long_leg.get("lastPrice") if long_leg else None,
+            "mid": long_mid,
+            "iv": iv,
+            "contractSymbol": long_leg.get("contractSymbol") if long_leg else plan["long_occ"],
+        },
+        "short": {
+            "bid": short_leg.get("bid") if short_leg else None,
+            "ask": short_leg.get("ask") if short_leg else None,
+            "last": short_leg.get("lastPrice") if short_leg else None,
+            "mid": short_mid,
+            "iv": short_leg.get("impliedVolatility") if short_leg else None,
+            "contractSymbol": short_leg.get("contractSymbol") if short_leg else plan["short_occ"],
+        },
+        "spreadMid": spread_mid,
+        "pnlPerSpread": pnl_per,
+        "pnlTotal": pnl_total,
+        "maxProfit": max_profit,
+        "breakeven": breakeven,
+        "delta": delta,
+        "atm": atm,
+        "status": status,
+        "distTrigger": dist_trigger,
+        "distSL": dist_sl,
+        "width": width,
+    }
+
+
+def build_snapshot() -> dict:
+    # unique symbols needing option chains
+    opt_jobs: dict[tuple[str, str], None] = {}
+    for p in WEEKLY_BULLISH + REVERSAL_BEARISH:
+        opt_jobs[(p["symbol"], p["expiry"])] = None
+
+    watch_syms = [w["symbol"] for w in WATCHLIST]
+    all_quote_syms = sorted(
+        set([p["symbol"] for p in WEEKLY_BULLISH + REVERSAL_BEARISH] + watch_syms + ["SPY"])
+    )
+
+    quotes = yahoo.quotes(all_quote_syms)
+
+    chains: dict[tuple[str, str], tuple] = {}
+    errors: list[str] = []
+    for sym, exp in opt_jobs:
+        try:
+            raw = yahoo.options_chain(sym, expiry_unix(exp))
+            chains[(sym, exp)] = chain_legs(raw)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{sym} {exp}: {e}")
+            chains[(sym, exp)] = (quotes.get(sym), [], [])
+
+    weekly = []
+    for p in WEEKLY_BULLISH:
+        q, calls, puts = chains.get((p["symbol"], p["expiry"]), (quotes.get(p["symbol"]), [], []))
+        # prefer chain quote if present
+        quote = q or quotes.get(p["symbol"]) or {}
+        weekly.append(enrich_spread(p, quote, calls, puts))
+
+    reversals = []
+    for p in REVERSAL_BEARISH:
+        q, calls, puts = chains.get((p["symbol"], p["expiry"]), (quotes.get(p["symbol"]), [], []))
+        quote = q or quotes.get(p["symbol"]) or {}
+        reversals.append(enrich_spread(p, quote, calls, puts))
+
+    watch = []
+    for w in WATCHLIST:
+        q = quotes.get(w["symbol"]) or {}
+        px = underlying_price(q)
+        chg = pct_change(q)
+        if px is None:
+            status = "N/A"
+        elif px > w["high"]:
+            status = "above high"
+        elif px < w["low"]:
+            status = "below low"
+        else:
+            status = "between"
+        watch.append(
+            {
+                **w,
+                "price": px,
+                "changePct": chg,
+                "status": status,
+            }
+        )
+
+    spy_q = quotes.get("SPY") or {}
+    now = datetime.now(timezone.utc)
+    return {
+        "ok": True,
+        "updatedAt": now.isoformat(),
+        "updatedIST": now.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
+        "updatedET": now.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
+        "banner": BANNER,
+        "spy": {
+            "price": underlying_price(spy_q),
+            "changePct": pct_change(spy_q),
+        },
+        "weeklyBullish": weekly,
+        "reversalBearish": reversals,
+        "watchlist": watch,
+        "signalsAsOf": "2026-10-30 close",
+        "disclaimer": (
+            "Not financial advice. Yahoo option quotes may be ~15 min delayed "
+            "intraday and are Friday-close over the weekend. No order placement."
+        ),
+        "errors": errors,
+    }
+
+
+app = FastAPI(title="Live Options Dashboard")
+STATIC = Path(__file__).parent / "static"
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/api/snapshot")
+def snapshot():
+    now = time.time()
+    with _cache_lock:
+        if _cache["data"] is not None and (now - _cache["ts"]) < CACHE_TTL:
+            return JSONResponse(_cache["data"])
+    try:
+        data = build_snapshot()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": str(e), "updatedAt": datetime.now(timezone.utc).isoformat()},
+            status_code=502,
+        )
+    with _cache_lock:
+        _cache["ts"] = time.time()
+        _cache["data"] = data
+    return JSONResponse(data)
+
+
+@app.get("/")
+def index():
+    return FileResponse(STATIC / "index.html")
+
+
+if STATIC.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app:app", host="0.0.0.0", port=int(__import__("os").environ.get("PORT", 8000)), reload=False)
