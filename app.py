@@ -26,7 +26,7 @@ UA = (
 )
 IST = ZoneInfo("Asia/Calcutta")
 ET = ZoneInfo("America/New_York")
-CACHE_TTL = 4.0
+CACHE_TTL = 15.0
 R_RATE = 0.05
 
 # Signals as of Fri 2026-10-30 close — structures from Sep14–Oct30 options backtest
@@ -94,18 +94,30 @@ class YahooClient:
         self._session.headers.update({"User-Agent": UA})
         self._crumb: Optional[str] = None
         self._crumb_ts = 0.0
+        self._backoff_until = 0.0  # epoch; skip Yahoo calls while rate-limited
+        self._quote_cache: dict[str, Any] = {"ts": 0.0, "data": {}}
+        self._chain_cache: dict[tuple[str, int], Any] = {}
+        self._chain_cache_ts: dict[tuple[str, int], float] = {}
+        self._QUOTE_TTL = 15.0
+        self._CHAIN_TTL = 30.0
+
+    def _mark_backoff(self, seconds: float = 60.0) -> None:
+        self._backoff_until = max(self._backoff_until, time.time() + seconds)
+
+    def _in_backoff(self) -> bool:
+        return time.time() < self._backoff_until
 
     def _refresh_auth(self) -> None:
+        if self._in_backoff():
+            return
         self._session.cookies.clear()
         self._session.get("https://fc.yahoo.com", timeout=15)
         r = self._session.get(
             "https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15
         )
         if r.status_code == 429:
-            # Rate-limited: keep existing crumb if any; otherwise soft-fail
-            if self._crumb:
-                return
-            raise RuntimeError("Yahoo crumb rate-limited (429)")
+            self._mark_backoff(90.0)
+            return
         r.raise_for_status()
         crumb = r.text.strip()
         if crumb and "html" not in crumb.lower():
@@ -114,7 +126,10 @@ class YahooClient:
 
     def ensure_auth(self) -> str:
         with self._lock:
-            if not self._crumb or (time.time() - self._crumb_ts) > 3600:
+            if self._in_backoff():
+                return self._crumb or ""
+            # Reuse crumb up to 6h; only refresh when missing/expired
+            if not self._crumb or (time.time() - self._crumb_ts) > 6 * 3600:
                 try:
                     self._refresh_auth()
                 except Exception:
@@ -122,12 +137,18 @@ class YahooClient:
             return self._crumb or ""
 
     def _get(self, url: str, params: Optional[dict] = None) -> Any:
+        if self._in_backoff() and not self._crumb:
+            raise RuntimeError("Yahoo backoff (rate-limited)")
         crumb = self.ensure_auth()
         p = dict(params or {})
         if crumb:
             p["crumb"] = crumb
         r = self._session.get(url, params=p, timeout=20)
-        if r.status_code in (401, 429):
+        if r.status_code == 429:
+            with self._lock:
+                self._mark_backoff(90.0)
+            raise RuntimeError("Yahoo 429")
+        if r.status_code == 401:
             with self._lock:
                 try:
                     self._refresh_auth()
@@ -137,13 +158,23 @@ class YahooClient:
             if crumb:
                 p["crumb"] = crumb
             r = self._session.get(url, params=p, timeout=20)
+            if r.status_code == 429:
+                with self._lock:
+                    self._mark_backoff(90.0)
+                raise RuntimeError("Yahoo 429")
         r.raise_for_status()
         return r.json()
 
     def quotes(self, symbols: list[str]) -> dict[str, dict]:
         if not symbols:
             return {}
-        # batch in chunks of 40
+        now = time.time()
+        with self._lock:
+            cached = self._quote_cache.get("data") or {}
+            if cached and (now - float(self._quote_cache.get("ts") or 0)) < self._QUOTE_TTL:
+                # Serve from cache when we already have all requested symbols
+                if all(s in cached for s in symbols):
+                    return {s: cached[s] for s in symbols if s in cached}
         out: dict[str, dict] = {}
         for i in range(0, len(symbols), 40):
             chunk = symbols[i : i + 40]
@@ -155,13 +186,33 @@ class YahooClient:
                 sym = q.get("symbol")
                 if sym:
                     out[sym] = q
+        with self._lock:
+            merged = dict(self._quote_cache.get("data") or {})
+            merged.update(out)
+            self._quote_cache = {"ts": time.time(), "data": merged}
         return out
 
     def options_chain(self, symbol: str, expiry_unix: int) -> dict:
-        return self._get(
+        key = (symbol.upper(), int(expiry_unix))
+        now = time.time()
+        with self._lock:
+            ts = self._chain_cache_ts.get(key, 0.0)
+            if key in self._chain_cache and (now - ts) < self._CHAIN_TTL:
+                return self._chain_cache[key]
+        data = self._get(
             f"https://query2.finance.yahoo.com/v7/finance/options/{symbol}",
             {"date": expiry_unix},
         )
+        with self._lock:
+            self._chain_cache[key] = data
+            self._chain_cache_ts[key] = time.time()
+            # Cap chain cache size
+            if len(self._chain_cache) > 80:
+                oldest = sorted(self._chain_cache_ts.items(), key=lambda kv: kv[1])[:20]
+                for k, _ in oldest:
+                    self._chain_cache.pop(k, None)
+                    self._chain_cache_ts.pop(k, None)
+        return data
 
 
 yahoo = YahooClient()
@@ -942,7 +993,11 @@ def positions_list(request: Request):
         from earnings import earnings_before_expiry
         for p in enriched["positions"]:
             try:
-                info_e = earnings_before_expiry(p["ticker"], p.get("expiry"))
+                info_e = earnings_before_expiry(
+                    p["ticker"],
+                    p.get("expiry"),
+                    entry_date=p.get("entry_date"),
+                )
                 p["earnings"] = info_e
                 p["earningsBadge"] = info_e.get("badge")
             except Exception:
