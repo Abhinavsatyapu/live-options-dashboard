@@ -27,188 +27,11 @@ ET = ZoneInfo("America/New_York")
 CACHE_TTL = 4.0
 R_RATE = 0.05
 
-# Signals as of Fri 2026-10-30 close
-WEEKLY_BULLISH = [
-    {
-        "symbol": "WDC",
-        "tag": "★ BULLISH",
-        "note": "Recommended",
-        "recommended": True,
-        "skip": False,
-        "expiry": "2026-11-13",
-        "long_occ": "WDC261113C00365000",
-        "short_occ": "WDC261113C00380000",
-        "long_strike": 365.0,
-        "short_strike": 380.0,
-        "debit": 4.25,
-        "size": 3,
-        "side": "call",
-    },
-    {
-        "symbol": "CEG",
-        "tag": "★ squeeze+VC3",
-        "note": "Recommended",
-        "recommended": True,
-        "skip": False,
-        "expiry": "2026-11-13",
-        "long_occ": "CEG261113C00262500",
-        "short_occ": "CEG261113C00270000",
-        "long_strike": 262.5,
-        "short_strike": 270.0,
-        "debit": 3.10,
-        "size": 4,
-        "side": "call",
-    },
-    {
-        "symbol": "PURR",
-        "tag": "★ BULLISH (IV ~108%)",
-        "note": "Spread only",
-        "recommended": True,
-        "skip": False,
-        "expiry": "2026-11-13",
-        "long_occ": "PURR261113C00011000",
-        "short_occ": "PURR261113C00013000",
-        "long_strike": 11.0,
-        "short_strike": 13.0,
-        "debit": 0.55,
-        "size": 1,
-        "side": "call",
-    },
-    {
-        "symbol": "LRCX",
-        "tag": "squeeze+VC",
-        "note": "Secondary",
-        "recommended": False,
-        "skip": False,
-        "expiry": "2026-11-13",
-        "long_occ": "LRCX261113C00240000",
-        "short_occ": "LRCX261113C00250000",
-        "long_strike": 240.0,
-        "short_strike": 250.0,
-        "debit": 4.10,
-        "size": 1,
-        "side": "call",
-    },
-    {
-        "symbol": "GEV",
-        "tag": "squeeze+VC",
-        "note": "Secondary",
-        "recommended": False,
-        "skip": False,
-        "expiry": "2026-11-20",
-        "long_occ": "GEV261120C00860000",
-        "short_occ": "GEV261120C00890000",
-        "long_strike": 860.0,
-        "short_strike": 890.0,
-        "debit": 12.60,
-        "size": 1,
-        "side": "call",
-    },
-    {
-        "symbol": "ABT",
-        "tag": "SKIP",
-        "note": "Skip",
-        "recommended": False,
-        "skip": True,
-        "expiry": "2026-11-13",
-        "long_occ": "ABT261113C00106000",
-        "short_occ": "ABT261113C00110000",
-        "long_strike": 106.0,
-        "short_strike": 110.0,
-        "debit": 1.65,
-        "size": 0,
-        "side": "call",
-    },
-]
+# Signals as of Fri 2026-10-30 close — structures from Sep14–Oct30 options backtest
+from trade_config import WEEKLY_SIGNALS, REVERSAL_BEARISH
 
-REVERSAL_BEARISH = [
-    {
-        "symbol": "SMR",
-        "tag": "★ absorbed calls, full size",
-        "note": "Enter ONLY when underlying breaks below trigger",
-        "expiry": "2026-11-20",
-        "long_occ": "SMR261120P00005500",
-        "short_occ": "SMR261120P00004500",
-        "long_strike": 5.5,
-        "short_strike": 4.5,
-        "debit": 0.38,
-        "size": 1,
-        "side": "put",
-        "trigger": 5.42,
-        "sl": 5.65,
-        "already_in": False,
-        "cover_above": None,
-    },
-    {
-        "symbol": "GOOG",
-        "tag": "",
-        "note": "Enter ONLY when underlying breaks below trigger",
-        "expiry": "2026-11-20",
-        "long_occ": "GOOG261120P00275000",
-        "short_occ": "GOOG261120P00265000",
-        "long_strike": 275.0,
-        "short_strike": 265.0,
-        "debit": 3.125,
-        "size": 1,
-        "side": "put",
-        "trigger": 275.35,
-        "sl": 281.86,
-        "already_in": False,
-        "cover_above": None,
-    },
-    {
-        "symbol": "DDOG",
-        "tag": "",
-        "note": "Enter ONLY when underlying breaks below trigger",
-        "expiry": "2026-11-20",
-        "long_occ": "DDOG261120P00230000",
-        "short_occ": "DDOG261120P00215000",
-        "long_strike": 230.0,
-        "short_strike": 215.0,
-        "debit": 6.60,
-        "size": 1,
-        "side": "put",
-        "trigger": 228.56,
-        "sl": 253.87,
-        "already_in": False,
-        "cover_above": None,
-    },
-    {
-        "symbol": "MRVL",
-        "tag": "",
-        "note": "Enter ONLY when underlying breaks below trigger",
-        "expiry": "2026-11-20",
-        "long_occ": "MRVL261120P00190000",
-        "short_occ": "MRVL261120P00180000",
-        "long_strike": 190.0,
-        "short_strike": 180.0,
-        "debit": 3.725,
-        "size": 1,
-        "side": "put",
-        "trigger": 190.15,
-        "sl": 207.61,
-        "already_in": False,
-        "cover_above": None,
-    },
-    {
-        "symbol": "NOW",
-        "tag": "already IN short from 114.27 (half size)",
-        "note": "Cover if > 109.90; hedge/expression put spread",
-        "expiry": "2026-11-20",
-        "long_occ": "NOW261120P00105000",
-        "short_occ": "NOW261120P00100000",
-        "long_strike": 105.0,
-        "short_strike": 100.0,
-        "debit": 2.085,
-        "size": 1,
-        "side": "put",
-        "trigger": None,
-        "sl": None,
-        "already_in": True,
-        "entry": 114.27,
-        "cover_above": 109.90,
-    },
-]
+# Back-compat alias used by snapshot builder
+WEEKLY_BULLISH = WEEKLY_SIGNALS
 
 WATCHLIST = [
     {"symbol": "AAOI", "low": 65.77, "high": 74.25},
@@ -417,32 +240,56 @@ def chain_legs(chain_json: dict) -> tuple[Optional[dict], list[dict], list[dict]
     return quote, calls, puts
 
 
+
 def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
     side = plan["side"]
     legs = calls if side == "call" else puts
     spot = underlying_price(quote)
     chg = pct_change(quote)
+    is_atm = bool(plan.get("is_atm")) or (
+        plan.get("structure") == "atm"
+        or plan.get("short_strike") is None
+        or (
+            plan.get("short_strike") is not None
+            and abs(float(plan["short_strike"]) - float(plan["long_strike"])) < 1e-9
+            and plan.get("structure") == "atm"
+        )
+    )
     long_leg = find_contract(legs, plan["long_strike"])
-    short_leg = find_contract(legs, plan["short_strike"])
+    short_leg = None if is_atm else find_contract(legs, plan["short_strike"])
     long_mid = mid_price(long_leg)
-    short_mid = mid_price(short_leg)
+    short_mid = mid_price(short_leg) if short_leg else None
     spread_mid = None
-    if long_mid is not None and short_mid is not None:
+    if is_atm:
+        spread_mid = long_mid
+    elif long_mid is not None and short_mid is not None:
         spread_mid = round(long_mid - short_mid, 4)
 
-    debit = plan["debit"]
-    width = abs(plan["short_strike"] - plan["long_strike"])
-    max_profit = round(width - debit, 4)
-    if side == "call":
-        breakeven = round(plan["long_strike"] + debit, 4)
+    debit = plan.get("debit")
+    if debit is None and spread_mid is not None:
+        debit = spread_mid
+    debit = float(debit) if debit is not None else 0.0
+
+    if is_atm:
+        width = None
+        max_profit = None  # uncapped
+        if side == "call":
+            breakeven = round(plan["long_strike"] + debit, 4)
+        else:
+            breakeven = round(plan["long_strike"] - debit, 4)
     else:
-        breakeven = round(plan["long_strike"] - debit, 4)
+        width = abs(float(plan["short_strike"]) - float(plan["long_strike"]))
+        max_profit = round(width - debit, 4)
+        if side == "call":
+            breakeven = round(plan["long_strike"] + debit, 4)
+        else:
+            breakeven = round(plan["long_strike"] - debit, 4)
 
     pnl_per = None
     pnl_total = None
     if spread_mid is not None:
         pnl_per = round(spread_mid - debit, 4)
-        pnl_total = round(pnl_per * 100 * plan["size"], 2)
+        pnl_total = round(pnl_per * 100 * plan.get("size", 0), 2)
 
     iv = None
     if long_leg and long_leg.get("impliedVolatility") is not None:
@@ -472,7 +319,7 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
     if plan.get("already_in"):
         status = "IN"
         if plan.get("cover_above") is not None and spot is not None:
-            dist_trigger = round(spot - plan["cover_above"], 4)  # dist to cover
+            dist_trigger = round(spot - plan["cover_above"], 4)
     elif plan.get("trigger") is not None and spot is not None:
         dist_trigger = round(spot - plan["trigger"], 4)
         dist_sl = round(plan["sl"] - spot, 4) if plan.get("sl") else None
@@ -483,8 +330,13 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
         else:
             status = "WAITING"
 
+    short_occ = plan.get("short_occ") or ""
+    long_occ = plan.get("long_occ") or ""
+
     return {
         **{k: plan[k] for k in plan},
+        "is_atm": is_atm,
+        "structure_label": "ATM " + side if is_atm else ("bull call debit" if side == "call" else "bear put debit"),
         "price": spot,
         "changePct": chg,
         "long": {
@@ -493,7 +345,7 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
             "last": long_leg.get("lastPrice") if long_leg else None,
             "mid": long_mid,
             "iv": iv,
-            "contractSymbol": long_leg.get("contractSymbol") if long_leg else plan["long_occ"],
+            "contractSymbol": long_leg.get("contractSymbol") if long_leg else long_occ,
         },
         "short": {
             "bid": short_leg.get("bid") if short_leg else None,
@@ -501,7 +353,7 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
             "last": short_leg.get("lastPrice") if short_leg else None,
             "mid": short_mid,
             "iv": short_leg.get("impliedVolatility") if short_leg else None,
-            "contractSymbol": short_leg.get("contractSymbol") if short_leg else plan["short_occ"],
+            "contractSymbol": short_leg.get("contractSymbol") if short_leg else short_occ,
         },
         "spreadMid": spread_mid,
         "pnlPerSpread": pnl_per,
@@ -517,8 +369,9 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
     }
 
 
+
+
 def build_snapshot() -> dict:
-    # unique symbols needing option chains
     opt_jobs: dict[tuple[str, str], None] = {}
     for p in WEEKLY_BULLISH + REVERSAL_BEARISH:
         opt_jobs[(p["symbol"], p["expiry"])] = None
@@ -543,9 +396,12 @@ def build_snapshot() -> dict:
     weekly = []
     for p in WEEKLY_BULLISH:
         q, calls, puts = chains.get((p["symbol"], p["expiry"]), (quotes.get(p["symbol"]), [], []))
-        # prefer chain quote if present
         quote = q or quotes.get(p["symbol"]) or {}
         weekly.append(enrich_spread(p, quote, calls, puts))
+
+    weekly_bullish = [r for r in weekly if r.get("section") == "bullish"]
+    weekly_squeeze = [r for r in weekly if r.get("section") == "squeeze"]
+    weekly_bearish = [r for r in weekly if r.get("section") == "bearish_weekly"]
 
     reversals = []
     for p in REVERSAL_BEARISH:
@@ -566,14 +422,7 @@ def build_snapshot() -> dict:
             status = "below low"
         else:
             status = "between"
-        watch.append(
-            {
-                **w,
-                "price": px,
-                "changePct": chg,
-                "status": status,
-            }
-        )
+        watch.append({**w, "price": px, "changePct": chg, "status": status})
 
     spy_q = quotes.get("SPY") or {}
     now = datetime.now(timezone.utc)
@@ -587,16 +436,26 @@ def build_snapshot() -> dict:
             "price": underlying_price(spy_q),
             "changePct": pct_change(spy_q),
         },
-        "weeklyBullish": weekly,
+        "weeklyBullish": weekly_bullish,
+        "weeklySqueeze": weekly_squeeze,
+        "weeklyBearishStar": weekly_bearish,
         "reversalBearish": reversals,
         "watchlist": watch,
         "signalsAsOf": "2026-10-30 close",
+        "backtestNote": (
+            "Structures from BS backtest Sep14–Oct30 @ $1k equal risk: "
+            "BULLISH★ → ATM call 1w; SQ+VC3★ → 1EM call debit 1w; SQ → ATM call 1w; "
+            "SQ+VC → skip/micro; BEARISH★ → ATM put 1w+PT; Reversals → ATM put (spread if ATM rich). "
+            "Modelled IV=RV20×1.15 — not live fills."
+        ),
         "disclaimer": (
             "Not financial advice. Yahoo option quotes may be ~15 min delayed "
             "intraday and are Friday-close over the weekend. No order placement."
         ),
         "errors": errors,
     }
+
+
 
 
 app = FastAPI(title="Live Options Dashboard")

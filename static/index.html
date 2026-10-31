@@ -43,8 +43,8 @@
   .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
   .tab {
     background: var(--panel); border: 1px solid var(--border); color: var(--muted);
-    padding: 10px 16px; border-radius: 10px; cursor: pointer; font-weight: 600;
-    min-height: 44px; /* iPad-friendly */
+    padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 600;
+    min-height: 44px;
   }
   .tab.active { background: var(--panel2); color: var(--text); border-color: var(--blue); }
   .panel { display: none; }
@@ -78,6 +78,8 @@
   .st-STOPPED { background: #3d1e24; color: var(--red); }
   .st-IN { background: #2a2540; color: var(--purple); }
   .st-SKIP { background: #2a2e36; color: var(--skip); }
+  .st-REC { background: #1e3d2a; color: var(--green); }
+  .st-SEC { background: #2a3140; color: #c0c8d8; }
   .st-above\ high { background: #1e3d2a; color: var(--green); }
   .st-between { background: #2a3140; color: #c0c8d8; }
   .st-below\ low { background: #3d1e24; color: var(--red); }
@@ -85,6 +87,10 @@
   th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
   th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
   .hint { color: var(--muted); font-size: 12px; margin: 8px 0 16px; }
+  .btnote {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 12px; color: var(--muted); font-size: 12px;
+  }
   .err { color: var(--amber); font-size: 12px; margin-top: 8px; }
   .footer { color: var(--muted); font-size: 11px; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
   .occ { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); }
@@ -120,16 +126,21 @@
   </header>
 
   <div class="banner" id="banner">SPY negative gamma — size down</div>
+  <div class="btnote" id="btnote"></div>
 
   <div class="tabs">
-    <button class="tab active" data-tab="weekly">Weekly Bullish</button>
+    <button class="tab active" data-tab="weekly">Weekly ★ Bullish</button>
+    <button class="tab" data-tab="squeeze">Squeeze Setups</button>
+    <button class="tab" data-tab="bearish">Weekly ★ Bearish</button>
     <button class="tab" data-tab="reversal">Reversal Bearish</button>
-    <button class="tab" data-tab="watch">Reversals Watch List</button>
+    <button class="tab" data-tab="watch">Reversals Watch</button>
   </div>
 
   <div class="hint" id="hint"></div>
 
   <section class="panel active" id="panel-weekly"></section>
+  <section class="panel" id="panel-squeeze"></section>
+  <section class="panel" id="panel-bearish"></section>
   <section class="panel" id="panel-reversal"></section>
   <section class="panel" id="panel-watch"></section>
 
@@ -162,66 +173,62 @@ function atmBlock(side, atm) {
     `mid ${fmt(atm.mid, 2)} · bid ${fmt(atm.bid, 2)} / ask ${fmt(atm.ask, 2)}`);
 }
 
-function weeklyCard(r) {
+function occLine(r) {
+  if (r.is_atm) return r.long_occ || "";
+  return `${r.long_occ || ""} / ${r.short_occ || ""}`;
+}
+
+function signalCard(r, mode) {
   const skip = r.skip;
   const rec = r.recommended && !skip;
-  const status = skip ? "SKIP" : (r.recommended ? "REC" : "SEC");
-  const stClass = skip ? "st-SKIP" : (rec ? "st-TRIGGERED" : "st-WAITING");
+  let status, stClass;
+  if (mode === "reversal") {
+    status = r.status || "WAITING";
+    stClass = "st-" + status;
+  } else {
+    status = skip ? "SKIP" : (r.recommended ? "REC" : "SEC");
+    stClass = skip ? "st-SKIP" : (rec ? "st-REC" : "st-SEC");
+  }
+  const struct = r.structure_label || (r.is_atm ? ("ATM " + r.side) : "debit spread");
+  const maxP = r.maxProfit == null ? "uncapped" : fmt(r.maxProfit, 3);
+  const strikes = r.is_atm
+    ? fmt(r.long_strike, 2) + " ATM"
+    : fmt(r.long_strike, 2) + " / " + fmt(r.short_strike, 2);
+
+  let triggerKvs = "";
+  if (mode === "reversal") {
+    triggerKvs = r.already_in
+      ? kv("Cover if >", fmt(r.cover_above, 2) + (r.distTrigger != null ? ` (Δ ${fmt(r.distTrigger, 2)})` : ""))
+        + kv("Entry short", fmt(r.entry, 2))
+      : kv("Trigger <", fmt(r.trigger, 2) + (r.distTrigger != null ? ` (dist ${fmt(r.distTrigger, 2)})` : ""))
+        + kv("Stop >", fmt(r.sl, 2) + (r.distSL != null ? ` (room ${fmt(r.distSL, 2)})` : ""));
+  }
+
   return `<div class="card ${skip ? "skip" : ""} ${rec ? "rec" : ""}">
     <div class="row-top">
       <div>
         <span class="sym">${r.symbol}</span>
-        <span class="tag">${r.tag || ""}</span>
-        <div class="note">${r.note || ""} · ${r.long_occ} / ${r.short_occ}</div>
+        <span class="tag">${r.tag || r.setup || ""}</span>
+        <div class="note">${r.note || ""} · ${struct} · <span class="occ">${occLine(r)}</span></div>
       </div>
       <span class="status ${stClass}">${status}</span>
     </div>
     <div class="grid">
       ${kv("Price", `${fmt(r.price)} <span class="${clsChg(r.changePct)}">${fmtPct(r.changePct)}</span>`)}
+      ${triggerKvs}
       ${kv("Expiry", r.expiry)}
-      ${kv("Spread mid", fmt(r.spreadMid, 3))}
+      ${kv("Structure", struct)}
+      ${kv("Strikes", strikes)}
+      ${kv(r.is_atm ? "Option mid" : "Spread mid", fmt(r.spreadMid, 3))}
       ${kv("Fri debit", fmt(r.debit, 3))}
-      ${kv("P&L / spr", money(r.pnlPerSpread != null ? r.pnlPerSpread * 100 : null), clsChg(r.pnlPerSpread))}
+      ${kv("P&L / unit", money(r.pnlPerSpread != null ? r.pnlPerSpread * 100 : null), clsChg(r.pnlPerSpread))}
       ${kv("P&L ×" + r.size, money(r.pnlTotal), clsChg(r.pnlTotal))}
-      ${kv("Max profit", fmt(r.maxProfit, 3))}
+      ${kv("Max profit", maxP)}
       ${kv("Breakeven", fmt(r.breakeven, 2))}
       ${kv("Long IV", r.long?.iv != null ? (r.long.iv * 100).toFixed(1) + "%" : "—")}
       ${kv("Δ long", fmt(r.delta, 3))}
-      ${kv("Long mid", fmt(r.long?.mid, 3))}
-      ${kv("Short mid", fmt(r.short?.mid, 3))}
-      ${atmBlock("call", r.atm)}
-      ${kv("Size", String(r.size) + " spr · risk ~$" + fmt(r.debit * 100 * r.size, 0))}
-    </div>
-  </div>`;
-}
-
-function reversalCard(r) {
-  const st = r.status || "WAITING";
-  return `<div class="card">
-    <div class="row-top">
-      <div>
-        <span class="sym">${r.symbol}</span>
-        <span class="tag">${r.tag || ""}</span>
-        <div class="note">${r.note || ""} · ${r.long_occ} / ${r.short_occ}</div>
-      </div>
-      <span class="status st-${st}">${st}</span>
-    </div>
-    <div class="grid">
-      ${kv("Price", `${fmt(r.price)} <span class="${clsChg(r.changePct)}">${fmtPct(r.changePct)}</span>`)}
-      ${r.already_in
-        ? kv("Cover if >", fmt(r.cover_above, 2) + (r.distTrigger != null ? ` (Δ ${fmt(r.distTrigger, 2)})` : ""))
-        : kv("Trigger <", fmt(r.trigger, 2) + (r.distTrigger != null ? ` (dist ${fmt(r.distTrigger, 2)})` : ""))}
-      ${r.already_in ? kv("Entry short", fmt(r.entry, 2)) : kv("Stop >", fmt(r.sl, 2) + (r.distSL != null ? ` (room ${fmt(r.distSL, 2)})` : ""))}
-      ${kv("Expiry", r.expiry)}
-      ${kv("Spread mid", fmt(r.spreadMid, 3))}
-      ${kv("Fri debit", fmt(r.debit, 3))}
-      ${kv("P&L / spr", money(r.pnlPerSpread != null ? r.pnlPerSpread * 100 : null), clsChg(r.pnlPerSpread))}
-      ${kv("Max profit", fmt(r.maxProfit, 3))}
-      ${kv("Breakeven", fmt(r.breakeven, 2))}
-      ${kv("Long IV", r.long?.iv != null ? (r.long.iv * 100).toFixed(1) + "%" : "—")}
-      ${kv("Δ long", fmt(r.delta, 3))}
-      ${atmBlock("put", r.atm)}
-      ${kv("Strikes", fmt(r.long_strike, 2) + " / " + fmt(r.short_strike, 2))}
+      ${atmBlock(r.side === "put" ? "put" : "call", r.atm)}
+      ${kv("Size", String(r.size) + (r.is_atm ? " ct" : " spr") + " · risk ~$" + fmt((r.debit || 0) * 100 * (r.size || 0), 0))}
     </div>
   </div>`;
 }
@@ -248,8 +255,7 @@ async function loadMe() {
     if (res.status === 401) { location.href = "/login"; return; }
     const data = await res.json();
     if (data.ok) {
-      const label = data.user + (data.role === "admin" ? " (admin)" : " (guest)");
-      $("who").textContent = label;
+      $("who").textContent = data.user + (data.role === "admin" ? " (admin)" : " (guest)");
     }
   } catch (e) { /* ignore */ }
 }
@@ -272,10 +278,13 @@ async function refresh() {
     }
     $("meta").textContent = `Signals as of ${data.signalsAsOf} · Updated ${data.updatedIST} / ${data.updatedET} · auto-refresh 5s`;
     $("banner").innerHTML = `<span class="pill">SIZE DOWN</span> ${data.banner.text}`;
+    $("btnote").textContent = data.backtestNote || "";
     $("spy").innerHTML = `SPY <b>${fmt(data.spy?.price)}</b> <span class="${clsChg(data.spy?.changePct)}">${fmtPct(data.spy?.changePct)}</span>`;
     $("hint").textContent = data.disclaimer;
-    $("panel-weekly").innerHTML = (data.weeklyBullish || []).map(weeklyCard).join("");
-    $("panel-reversal").innerHTML = (data.reversalBearish || []).map(reversalCard).join("");
+    $("panel-weekly").innerHTML = (data.weeklyBullish || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No bullish ★ cards</div>";
+    $("panel-squeeze").innerHTML = (data.weeklySqueeze || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No squeeze cards</div>";
+    $("panel-bearish").innerHTML = (data.weeklyBearishStar || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No weekly bearish ★</div>";
+    $("panel-reversal").innerHTML = (data.reversalBearish || []).map(r => signalCard(r, "reversal")).join("");
     $("panel-watch").innerHTML = watchTable(data.watchlist || []);
     $("errors").textContent = (data.errors && data.errors.length) ? ("Yahoo partial errors: " + data.errors.join(" · ")) : "";
     $("footer").textContent = data.disclaimer + " View-only dashboard — no order placement of any kind.";

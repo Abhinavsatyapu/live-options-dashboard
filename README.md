@@ -1,6 +1,6 @@
 # Live Options Dashboard
 
-View-only web dashboard for a weekly bullish / reversal bearish options plan.
+View-only web dashboard for weekly ★ bullish, all squeeze setups, weekly ★ bearish, and reversal bearish options plans (structures from Sep14–Oct30 BS backtest).
 Fetches underlying prices and option quotes from Yahoo Finance via a small FastAPI backend.
 Frontend polls `/api/snapshot` every 5 seconds. Protected by a username/password sign-in page.
 
