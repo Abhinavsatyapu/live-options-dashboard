@@ -39,5 +39,12 @@ Set the three env vars above in the Render dashboard (never commit secrets; repo
 
 - Tab **My Positions**: admin (`abhinav`) can add/edit/close; guest is read-only.
 - Persistence: Neon Postgres via `DATABASE_URL` (set on Render; never commit).
-- Exit monitor: run `python /workspace/check_exits.py` (or `python check_exits.py` from this repo with `DATABASE_URL`). JSON stdout; dedupe state in `/workspace/exit_alert_state.json`.
-- Earnings-before-expiry badges on signal/position cards (Yahoo, cached daily).
+- Exit monitor (from the box that can reach Neon + Yahoo):
+  ```bash
+  python /workspace/check_exits.py
+  # reads DATABASE_URL or /workspace/.secrets/options_db_url
+  # optional fixture: python /workspace/check_exits.py --positions-file /tmp/open.json
+  ```
+  Stdout JSON: `{ ok, checked_at, open, alerts, new_alerts, alert_kinds }`.
+  Dedupe state: `/workspace/exit_alert_state.json` (same alert key not re-emitted in `new_alerts`).
+- Earnings-before-expiry badges on signal/position/Early★ cards (Yahoo, cached daily in Neon + local file).
