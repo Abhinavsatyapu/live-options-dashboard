@@ -114,7 +114,7 @@ class YahooClient:
         self._chain_cache_ts: dict[tuple[str, int], float] = {}
         self._last_good_chains: dict[tuple[str, int], Any] = {}
         self._QUOTE_TTL = 12.0
-        self._CHAIN_TTL = 25.0
+        self._CHAIN_TTL = 90.0
         self._quotes_stale_age: Optional[float] = None
 
     def _mark_backoff(self, seconds: float = 45.0) -> None:
@@ -675,10 +675,20 @@ def build_snapshot() -> dict:
         quotes = {}
 
     chains: dict[tuple[str, str], tuple] = {}
-    for sym, exp in opt_jobs:
+    for i, (sym, exp) in enumerate(opt_jobs):
         try:
+            if i:
+                time.sleep(0.12)  # avoid Yahoo options 401 bursts on Render
             raw = yahoo.options_chain(sym, expiry_unix(exp))
             chains[(sym, exp)] = chain_legs(raw)
+            # If empty legs, retry once after crumb refresh
+            _q, _c, _p = chains[(sym, exp)]
+            if not _c and not _p:
+                time.sleep(0.2)
+                with yahoo._lock:
+                    yahoo._crumb = None
+                raw = yahoo.options_chain(sym, expiry_unix(exp))
+                chains[(sym, exp)] = chain_legs(raw)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{sym} {exp}: {e}")
             chains[(sym, exp)] = (quotes.get(sym), [], [])
