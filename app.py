@@ -1,6 +1,8 @@
 """Live options plan dashboard — Yahoo Finance quotes + option chains."""
 from __future__ import annotations
 
+import json
+
 import hashlib
 import math
 import os
@@ -29,6 +31,16 @@ R_RATE = 0.05
 
 # Signals as of Fri 2026-10-30 close — structures from Sep14–Oct30 options backtest
 from trade_config import WEEKLY_SIGNALS, REVERSAL_BEARISH
+
+_EARLY_PATH = Path(__file__).parent / "early_current.json"
+_EARLY_RULES_PATH = Path(__file__).parent / "early_rules.json"
+
+def load_early():
+    try:
+        return json.loads(_EARLY_PATH.read_text())
+    except Exception:
+        return {"sure_shots": [], "forming_watch": [], "counts": {}, "rules": {}}
+
 
 # Back-compat alias used by snapshot builder
 WEEKLY_BULLISH = WEEKLY_SIGNALS
@@ -371,6 +383,53 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
 
 
 
+def enrich_early(early: dict, quotes: dict, chains: dict) -> list:
+    """Attach live marks to Tier-S early sure shots; map to known plan OCC when present."""
+    plans = {}
+    for p in WEEKLY_BULLISH + REVERSAL_BEARISH:
+        sym = p["symbol"]
+        # Prefer recommended / non-skip / larger size when duplicates exist
+        prev = plans.get(sym)
+        if prev is None:
+            plans[sym] = p
+        elif p.get("recommended") and not prev.get("recommended"):
+            plans[sym] = p
+        elif (not p.get("skip")) and prev.get("skip"):
+            plans[sym] = p
+        elif (p.get("size") or 0) > (prev.get("size") or 0):
+            plans[sym] = p
+    out = []
+    for s in early.get("sure_shots") or []:
+        sym = s.get("sym")
+        plan = plans.get(sym)
+        spot = underlying_price(quotes.get(sym) or {})
+        chg = pct_change(quotes.get(sym) or {})
+        row = {**s, "price": spot, "changePct": chg}
+        if plan:
+            q, calls, puts = chains.get((plan["symbol"], plan["expiry"]), (quotes.get(sym), [], []))
+            enriched = enrich_spread(plan, q or quotes.get(sym) or {}, calls, puts)
+            row["plan"] = {
+                "expiry": plan.get("expiry"),
+                "structure": enriched.get("structure_label"),
+                "long_occ": plan.get("long_occ"),
+                "short_occ": plan.get("short_occ") if not plan.get("is_atm") else "",
+                "debit": plan.get("debit"),
+                "spreadMid": enriched.get("spreadMid"),
+                "breakeven": enriched.get("breakeven"),
+                "maxProfit": enriched.get("maxProfit"),
+                "side": plan.get("side"),
+                "is_atm": plan.get("is_atm"),
+                "long_strike": plan.get("long_strike"),
+                "short_strike": plan.get("short_strike"),
+                "size": plan.get("size"),
+            }
+        else:
+            row["plan"] = None
+        out.append(row)
+    return out
+
+
+
 def build_snapshot() -> dict:
     opt_jobs: dict[tuple[str, str], None] = {}
     for p in WEEKLY_BULLISH + REVERSAL_BEARISH:
@@ -441,12 +500,14 @@ def build_snapshot() -> dict:
         "weeklyBearishStar": weekly_bearish,
         "reversalBearish": reversals,
         "watchlist": watch,
+        "earlySureShots": enrich_early(load_early(), quotes, chains),
+        "earlyRules": (load_early().get("rules") or {}),
         "signalsAsOf": "2026-10-30 close",
         "backtestNote": (
             "Standing rule: bullish ONLY from Weekly; bearish ONLY from Reversals "
             "(Weekly BEARISH reads never used). Structures from BS backtest Sep14–Oct30 @ $1k equal risk: "
             "BULLISH★ → ATM call 1w; SQ+VC3★ → 1EM call debit 1w; SQ → ATM call 1w; "
-            "SQ+VC → skip/micro; Reversals → ATM put (spread if ATM rich). "
+            "SQ+VC → skip/micro; Reversals → ATM put (spread if ATM rich). Early ★ tab = Tier-S only (Fri ★/SQ+VC3★ + Reversal ABSORBED). "
             "Modelled IV=RV20×1.15 — not live fills."
         ),
         "disclaimer": (

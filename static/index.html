@@ -129,7 +129,8 @@
   <div class="btnote" id="btnote"></div>
 
   <div class="tabs">
-    <button class="tab active" data-tab="weekly">Weekly ★ Bullish</button>
+    <button class="tab active" data-tab="early">Early ★ Sure-shot</button>
+    <button class="tab" data-tab="weekly">Weekly ★ Bullish</button>
     <button class="tab" data-tab="squeeze">Squeeze Setups</button>
     <button class="tab" data-tab="reversal">Reversal Bearish</button>
     <button class="tab" data-tab="watch">Reversals Watch</button>
@@ -137,7 +138,8 @@
 
   <div class="hint" id="hint"></div>
 
-  <section class="panel active" id="panel-weekly"></section>
+  <section class="panel active" id="panel-early"></section>
+  <section class="panel" id="panel-weekly"></section>
   <section class="panel" id="panel-squeeze"></section>
   <section class="panel" id="panel-reversal"></section>
   <section class="panel" id="panel-watch"></section>
@@ -174,6 +176,37 @@ function atmBlock(side, atm) {
 function occLine(r) {
   if (r.is_atm) return r.long_occ || "";
   return `${r.long_occ || ""} / ${r.short_occ || ""}`;
+}
+
+
+function earlyCard(r) {
+  const plan = r.plan || {};
+  const side = r.side === 'bearish' ? 'BEAR' : 'BULL';
+  const st = r.tier === 'S' ? 'REC' : 'WATCH';
+  const stClass = r.tier === 'S' ? 'st-REC' : 'st-WAITING';
+  const occ = plan.long_occ ? (plan.is_atm ? plan.long_occ : (plan.long_occ + ' / ' + (plan.short_occ||''))) : '—';
+  return `<div class="card rec">
+    <div class="row-top">
+      <div>
+        <span class="sym">${r.sym}</span>
+        <span class="tag">${side} · ${r.setup || ''} · conf ${(r.confidence*100).toFixed(0)}%</span>
+        <div class="note">${r.why || ''} · ${r.days_early || ''}</div>
+      </div>
+      <span class="status ${stClass}">${st}</span>
+    </div>
+    <div class="grid">
+      ${kv("Price", `${fmt(r.price)} <span class="${clsChg(r.changePct)}">${fmtPct(r.changePct)}</span>`)}
+      ${kv("Entry", r.entry || '—')}
+      ${kv("Trigger", r.trigger != null ? fmt(r.trigger,2) : '—')}
+      ${kv("Stop", r.stop != null ? (typeof r.stop==='number'?fmt(r.stop,2):r.stop) : '—')}
+      ${kv("Structure", plan.structure || r.structure || '—')}
+      ${kv("OCC", `<span class="occ">${occ}</span>`)}
+      ${kv("Debit", plan.debit != null ? fmt(plan.debit,3) : '—')}
+      ${kv("Live mid", plan.spreadMid != null ? fmt(plan.spreadMid,3) : '—')}
+      ${kv("Size", plan.size != null ? String(plan.size) : (r.size || '—'))}
+      ${kv("Source", r.source + ' · ' + (r.week || r.session || ''))}
+    </div>
+  </div>`;
 }
 
 function signalCard(r, mode) {
@@ -279,6 +312,8 @@ async function refresh() {
     $("btnote").textContent = data.backtestNote || "";
     $("spy").innerHTML = `SPY <b>${fmt(data.spy?.price)}</b> <span class="${clsChg(data.spy?.changePct)}">${fmtPct(data.spy?.changePct)}</span>`;
     $("hint").textContent = data.disclaimer;
+    const early = data.earlySureShots || [];
+    $("panel-early").innerHTML = (early.length ? early.map(earlyCard).join("") : "<div class='card'><div class='note'>No Tier-S sure shots right now. Midweek forming alerts are not shown here (prep-only until Friday / ABSORBED).</div></div>");
     $("panel-weekly").innerHTML = (data.weeklyBullish || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No bullish ★ cards</div>";
     $("panel-squeeze").innerHTML = (data.weeklySqueeze || []).map(r => signalCard(r, "weekly")).join("") || "<div class='note'>No squeeze cards</div>";
     $("panel-reversal").innerHTML = (data.reversalBearish || []).map(r => signalCard(r, "reversal")).join("");
