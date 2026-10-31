@@ -4,6 +4,7 @@
 Usage:
   DATABASE_URL=... python /workspace/check_exits.py
   # or: reads /workspace/.secrets/options_db_url
+  # offline/fixture: python check_exits.py --positions-file /tmp/open_positions.json
 
 Stdout: JSON object
   {
@@ -279,20 +280,38 @@ def evaluate_position(pos: dict, session, covers: dict[str, float], today_et: da
 
 
 def main() -> int:
-    try:
-        from db import list_positions, ensure_schema, database_url
-    except Exception as e:
-        print(json.dumps({"ok": False, "error": f"import: {e}"}))
-        return 2
-    if not database_url():
-        print(json.dumps({"ok": False, "error": "DATABASE_URL missing"}))
-        return 2
-    try:
-        ensure_schema()
-        opens = list_positions("open")
-    except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
-        return 2
+    positions_file = None
+    args = sys.argv[1:]
+    if "--positions-file" in args:
+        i = args.index("--positions-file")
+        if i + 1 >= len(args):
+            print(json.dumps({"ok": False, "error": "--positions-file needs a path"}))
+            return 2
+        positions_file = args[i + 1]
+
+    if positions_file:
+        try:
+            opens = json.loads(Path(positions_file).read_text())
+            if isinstance(opens, dict):
+                opens = opens.get("positions") or opens.get("open") or []
+        except Exception as e:
+            print(json.dumps({"ok": False, "error": f"positions-file: {e}"}))
+            return 2
+    else:
+        try:
+            from db import list_positions, ensure_schema, database_url
+        except Exception as e:
+            print(json.dumps({"ok": False, "error": f"import: {e}"}))
+            return 2
+        if not database_url():
+            print(json.dumps({"ok": False, "error": "DATABASE_URL missing"}))
+            return 2
+        try:
+            ensure_schema()
+            opens = list_positions("open")
+        except Exception as e:
+            print(json.dumps({"ok": False, "error": str(e)}))
+            return 2
 
     import requests
     sess = requests.Session()

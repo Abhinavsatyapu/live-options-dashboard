@@ -888,7 +888,7 @@ def positions_list(request: Request):
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": str(e), "positions": [], "summary": {}}, status_code=503)
     tickers = sorted({r["ticker"].upper() for r in rows})
-    quotes = yahoo.quotes(tickers) if tickers else {}
+    quotes = {}
     # week closed for WTD realised
     closed_week = []
     try:
@@ -907,22 +907,40 @@ def positions_list(request: Request):
                 pass
     except Exception:
         pass
-    enriched = enrich_positions(yahoo, quotes, rows, closed_week=closed_week)
+    try:
+        quotes = yahoo.quotes(tickers) if tickers else {}
+    except Exception as e:  # noqa: BLE001
+        quotes = {}
+        # continue with empty quotes
+        _qerr = str(e)
+    else:
+        _qerr = None
+    try:
+        enriched = enrich_positions(yahoo, quotes, rows, closed_week=closed_week)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": f"enrich: {e}", "positions": rows, "summary": {}}, status_code=500)
     # earnings badges on positions
     try:
         from earnings import earnings_before_expiry
         for p in enriched["positions"]:
-            info_e = earnings_before_expiry(p["ticker"], p.get("expiry"))
-            p["earnings"] = info_e
-            p["earningsBadge"] = info_e.get("badge")
+            try:
+                info_e = earnings_before_expiry(p["ticker"], p.get("expiry"))
+                p["earnings"] = info_e
+                p["earningsBadge"] = info_e.get("badge")
+            except Exception:
+                p["earnings"] = None
+                p["earningsBadge"] = None
     except Exception:
         pass
-    return {
+    out = {
         "ok": True,
         "role": info["role"],
         "canEdit": info["role"] == "admin",
         **enriched,
     }
+    if _qerr:
+        out["quoteError"] = _qerr
+    return out
 
 
 @app.post("/api/positions")
