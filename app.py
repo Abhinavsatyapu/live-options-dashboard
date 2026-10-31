@@ -9,6 +9,7 @@ import os
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Any, Optional
@@ -88,109 +89,245 @@ BANNER = {
 
 
 class YahooClient:
+    """Yahoo market data with Render-safe fallbacks.
+
+    Underlyings: v8/finance/chart (no crumb; works when v7/quote is 401).
+    Option chains: v7/options with crumb refresh + host rotation.
+    Always keep last-good values so UI never blanks on transient blocks.
+    """
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": UA})
         self._crumb: Optional[str] = None
         self._crumb_ts = 0.0
-        self._backoff_until = 0.0  # epoch; skip Yahoo calls while rate-limited
+        self._backoff_until = 0.0
+        self._hosts = (
+            "https://query1.finance.yahoo.com",
+            "https://query2.finance.yahoo.com",
+        )
+        self._host_i = 0
         self._quote_cache: dict[str, Any] = {"ts": 0.0, "data": {}}
+        self._last_good_quotes: dict[str, dict] = {}
         self._chain_cache: dict[tuple[str, int], Any] = {}
         self._chain_cache_ts: dict[tuple[str, int], float] = {}
-        self._QUOTE_TTL = 15.0
-        self._CHAIN_TTL = 30.0
+        self._last_good_chains: dict[tuple[str, int], Any] = {}
+        self._QUOTE_TTL = 12.0
+        self._CHAIN_TTL = 25.0
+        self._quotes_stale_age: Optional[float] = None
 
-    def _mark_backoff(self, seconds: float = 60.0) -> None:
+    def _mark_backoff(self, seconds: float = 45.0) -> None:
         self._backoff_until = max(self._backoff_until, time.time() + seconds)
 
     def _in_backoff(self) -> bool:
         return time.time() < self._backoff_until
 
+    def _next_host(self) -> str:
+        h = self._hosts[self._host_i % len(self._hosts)]
+        self._host_i += 1
+        return h
+
     def _refresh_auth(self) -> None:
         if self._in_backoff():
             return
         self._session.cookies.clear()
-        self._session.get("https://fc.yahoo.com", timeout=15)
-        r = self._session.get(
-            "https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15
-        )
-        if r.status_code == 429:
-            self._mark_backoff(90.0)
-            return
-        r.raise_for_status()
-        crumb = r.text.strip()
-        if crumb and "html" not in crumb.lower():
-            self._crumb = crumb
-            self._crumb_ts = time.time()
+        # Consent / cookie warm-up — helps some Yahoo edges
+        for url in (
+            "https://finance.yahoo.com/",
+            "https://fc.yahoo.com",
+        ):
+            try:
+                self._session.get(url, timeout=12)
+            except Exception:
+                pass
+        last_err: Optional[Exception] = None
+        for host in self._hosts:
+            try:
+                r = self._session.get(f"{host}/v1/test/getcrumb", timeout=12)
+                if r.status_code == 429:
+                    self._mark_backoff(60.0)
+                    last_err = RuntimeError("crumb 429")
+                    continue
+                if not r.ok:
+                    last_err = RuntimeError(f"crumb {r.status_code}")
+                    continue
+                crumb = r.text.strip()
+                if crumb and "html" not in crumb.lower() and len(crumb) < 80:
+                    self._crumb = crumb
+                    self._crumb_ts = time.time()
+                    return
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        if last_err and not self._crumb:
+            # Don't raise — callers soft-fail to last-good / v8
+            pass
 
     def ensure_auth(self) -> str:
         with self._lock:
-            if self._in_backoff():
-                return self._crumb or ""
-            # Reuse crumb up to 6h; only refresh when missing/expired
-            if not self._crumb or (time.time() - self._crumb_ts) > 6 * 3600:
+            if not self._crumb or (time.time() - self._crumb_ts) > 2 * 3600:
                 try:
                     self._refresh_auth()
                 except Exception:
                     pass
             return self._crumb or ""
 
-    def _get(self, url: str, params: Optional[dict] = None) -> Any:
-        if self._in_backoff() and not self._crumb:
-            raise RuntimeError("Yahoo backoff (rate-limited)")
-        crumb = self.ensure_auth()
-        p = dict(params or {})
-        if crumb:
-            p["crumb"] = crumb
-        r = self._session.get(url, params=p, timeout=20)
-        if r.status_code == 429:
-            with self._lock:
-                self._mark_backoff(90.0)
-            raise RuntimeError("Yahoo 429")
-        if r.status_code == 401:
-            with self._lock:
-                try:
-                    self._refresh_auth()
-                except Exception:
-                    pass
-                crumb = self._crumb or ""
-            if crumb:
-                p["crumb"] = crumb
-            r = self._session.get(url, params=p, timeout=20)
+    def _get_json(self, path: str, params: Optional[dict] = None, need_crumb: bool = True) -> Any:
+        """GET path on rotating hosts; refresh crumb on 401."""
+        params = dict(params or {})
+        last_status = None
+        for attempt in range(4):
+            if need_crumb:
+                crumb = self.ensure_auth()
+                if crumb:
+                    params["crumb"] = crumb
+                elif self._in_backoff():
+                    raise RuntimeError("Yahoo crumb unavailable (backoff)")
+            host = self._hosts[(self._host_i + attempt) % len(self._hosts)]
+            url = f"{host}{path}"
+            r = self._session.get(url, params=params, timeout=18)
+            last_status = r.status_code
             if r.status_code == 429:
                 with self._lock:
-                    self._mark_backoff(90.0)
-                raise RuntimeError("Yahoo 429")
-        r.raise_for_status()
-        return r.json()
+                    self._mark_backoff(60.0)
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            if r.status_code == 401:
+                with self._lock:
+                    self._crumb = None
+                    try:
+                        self._refresh_auth()
+                    except Exception:
+                        pass
+                time.sleep(0.25 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise RuntimeError(f"Yahoo GET failed status={last_status} path={path}")
+
+    @staticmethod
+    def _quote_from_chart(symbol: str, chart_json: dict) -> Optional[dict]:
+        try:
+            result = (chart_json.get("chart") or {}).get("result") or []
+            if not result:
+                return None
+            meta = result[0].get("meta") or {}
+            px = meta.get("regularMarketPrice")
+            if px is None:
+                return None
+            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            chg_pct = None
+            try:
+                if prev and float(prev) > 0:
+                    chg_pct = (float(px) / float(prev) - 1.0) * 100.0
+            except Exception:
+                chg_pct = None
+            return {
+                "symbol": symbol.upper(),
+                "regularMarketPrice": float(px),
+                "regularMarketPreviousClose": float(prev) if prev is not None else None,
+                "regularMarketChangePercent": chg_pct,
+                "regularMarketTime": meta.get("regularMarketTime"),
+                "_source": "v8_chart",
+                "_fetched_at": time.time(),
+            }
+        except Exception:
+            return None
+
+    def _chart_one(self, symbol: str) -> Optional[dict]:
+        sym = symbol.upper()
+        last_err = None
+        for host in self._hosts:
+            try:
+                r = self._session.get(
+                    f"{host}/v8/finance/chart/{sym}",
+                    params={"interval": "1m", "range": "1d"},
+                    timeout=15,
+                )
+                if r.status_code == 429:
+                    with self._lock:
+                        self._mark_backoff(45.0)
+                    time.sleep(0.3)
+                    continue
+                if not r.ok:
+                    last_err = RuntimeError(f"chart {r.status_code}")
+                    continue
+                q = self._quote_from_chart(sym, r.json())
+                if q:
+                    return q
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        if last_err:
+            pass
+        return None
 
     def quotes(self, symbols: list[str]) -> dict[str, dict]:
         if not symbols:
             return {}
+        syms = [s.upper() for s in symbols]
         now = time.time()
         with self._lock:
             cached = self._quote_cache.get("data") or {}
             if cached and (now - float(self._quote_cache.get("ts") or 0)) < self._QUOTE_TTL:
-                # Serve from cache when we already have all requested symbols
-                if all(s in cached for s in symbols):
-                    return {s: cached[s] for s in symbols if s in cached}
+                if all(s in cached for s in syms):
+                    self._quotes_stale_age = None
+                    return {s: cached[s] for s in syms}
+
         out: dict[str, dict] = {}
-        for i in range(0, len(symbols), 40):
-            chunk = symbols[i : i + 40]
-            data = self._get(
-                "https://query1.finance.yahoo.com/v7/finance/quote",
-                {"symbols": ",".join(chunk)},
-            )
-            for q in data.get("quoteResponse", {}).get("result", []) or []:
-                sym = q.get("symbol")
-                if sym:
-                    out[sym] = q
+        # Prefer crumb-less v8 chart (reliable on Render when v7/quote is 401)
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futs = {ex.submit(self._chart_one, s): s for s in syms}
+            for fut in as_completed(futs):
+                s = futs[fut]
+                try:
+                    q = fut.result()
+                except Exception:
+                    q = None
+                if q:
+                    out[s] = q
+
+        # Optional enrichment via v7 if crumb works (ignore failures)
+        missing = [s for s in syms if s not in out]
+        if missing and not self._in_backoff():
+            try:
+                data = self._get_json(
+                    "/v7/finance/quote",
+                    {"symbols": ",".join(missing[:40])},
+                    need_crumb=True,
+                )
+                for q in data.get("quoteResponse", {}).get("result", []) or []:
+                    sym = q.get("symbol")
+                    if sym:
+                        q = dict(q)
+                        q["_source"] = "v7_quote"
+                        q["_fetched_at"] = time.time()
+                        out[sym] = q
+            except Exception:
+                pass
+
         with self._lock:
+            for s, q in out.items():
+                self._last_good_quotes[s] = q
+            # Fill holes from last-good
+            stale_ages = []
+            for s in syms:
+                if s not in out and s in self._last_good_quotes:
+                    lg = dict(self._last_good_quotes[s])
+                    age = time.time() - float(lg.get("_fetched_at") or now)
+                    lg["_stale"] = True
+                    lg["_age_sec"] = age
+                    out[s] = lg
+                    stale_ages.append(age)
             merged = dict(self._quote_cache.get("data") or {})
             merged.update(out)
             self._quote_cache = {"ts": time.time(), "data": merged}
+            self._quotes_stale_age = max(stale_ages) if stale_ages and len(out) == len(stale_ages) else (
+                max(stale_ages) if stale_ages else None
+            )
         return out
+
+    def quotes_stale_age(self) -> Optional[float]:
+        return self._quotes_stale_age
 
     def options_chain(self, symbol: str, expiry_unix: int) -> dict:
         key = (symbol.upper(), int(expiry_unix))
@@ -199,14 +336,21 @@ class YahooClient:
             ts = self._chain_cache_ts.get(key, 0.0)
             if key in self._chain_cache and (now - ts) < self._CHAIN_TTL:
                 return self._chain_cache[key]
-        data = self._get(
-            f"https://query2.finance.yahoo.com/v7/finance/options/{symbol}",
-            {"date": expiry_unix},
-        )
+        try:
+            data = self._get_json(
+                f"/v7/finance/options/{symbol.upper()}",
+                {"date": int(expiry_unix)},
+                need_crumb=True,
+            )
+        except Exception:
+            with self._lock:
+                if key in self._last_good_chains:
+                    return self._last_good_chains[key]
+            raise
         with self._lock:
             self._chain_cache[key] = data
             self._chain_cache_ts[key] = time.time()
-            # Cap chain cache size
+            self._last_good_chains[key] = data
             if len(self._chain_cache) > 80:
                 oldest = sorted(self._chain_cache_ts.items(), key=lambda kv: kv[1])[:20]
                 for k, _ in oldest:
@@ -642,6 +786,8 @@ def build_snapshot() -> dict:
             "intraday and are Friday-close over the weekend. No order placement."
         ),
         "errors": errors,
+        "quotesSource": "v8_chart",
+        "quotesStaleAgeSec": yahoo.quotes_stale_age(),
     }
 
 

@@ -902,12 +902,17 @@ async function refresh() {
     $("panel-watch").innerHTML = watchTable(watch);
 
     const errs = data.errors || [];
-    const quoteBad = errs.length > 0 || spyPx == null;
+    const staleAge = data.quotesStaleAgeSec;
+    const quoteBad = errs.length > 0 || spyPx == null || (staleAge != null && staleAge > 60);
     $("quote-warn").classList.toggle("show", quoteBad);
     if (quoteBad) {
-      $("quote-warn").textContent = errs.length
-        ? ("Quotes delayed / limited — " + errs[0].slice(0, 120))
-        : "Quotes delayed — live prices temporarily unavailable.";
+      if (spyPx != null && staleAge != null) {
+        $("quote-warn").textContent = `Showing last-good quotes (~${Math.round(staleAge)}s old). Yahoo refresh limited.`;
+      } else if (errs.length) {
+        $("quote-warn").textContent = "Quotes delayed / limited — " + String(errs[0]).slice(0, 120);
+      } else {
+        $("quote-warn").textContent = "Quotes delayed — live prices temporarily unavailable.";
+      }
     }
     $("errors").textContent = errs.length > 1 ? ("Also: " + errs.slice(1, 3).join(" · ")) : "";
     $("footer").textContent = (data.disclaimer || "Not financial advice.") + " Admin edits positions; guest read-only. No order placement.";
