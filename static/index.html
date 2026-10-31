@@ -275,7 +275,7 @@
       </div>
       <div class="meta-row">
         <span class="dot" id="live-dot" title="Live"></span>
-        <span id="meta">Loading…</span>
+        <span id="meta">Connecting…</span>
         <span id="signals-asof"></span>
       </div>
     </div>
@@ -368,6 +368,15 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const TAB_KEY = "opts_terminal_tab";
+async function fetchWithTimeout(url, opts = {}, ms = 45000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
 const fmt = (n, d=2) => (n == null || Number.isNaN(n)) ? "—" : Number(n).toFixed(d);
 const fmtPct = (n, d=2) => (n == null) ? "—" : ((n >= 0 ? "+" : "") + Number(n).toFixed(d) + "%");
 const clsChg = (n) => (n == null) ? "" : (n >= 0 ? "pos" : "neg");
@@ -791,7 +800,7 @@ function updateKpis() {
 
 async function refreshPositions() {
   try {
-    const res = await fetch("/api/positions?status=open", { cache: "no-store", credentials: "same-origin" });
+    const res = await fetchWithTimeout("/api/positions?status=open", { cache: "no-store", credentials: "same-origin" }, 45000);
     if (res.status === 401) { location.href = "/login"; return; }
     const data = await res.json();
     if (!data.ok) {
@@ -816,7 +825,7 @@ async function refreshPositions() {
 
 async function loadMe() {
   try {
-    const res = await fetch("/api/me", { cache: "no-store", credentials: "same-origin" });
+    const res = await fetchWithTimeout("/api/me", { cache: "no-store", credentials: "same-origin" }, 20000);
     if (res.status === 401) { location.href = "/login"; return; }
     const data = await res.json();
     if (data.ok) {
@@ -842,7 +851,10 @@ $("btnote-toggle").addEventListener("click", () => {
 
 async function refresh() {
   try {
-    const res = await fetch("/api/snapshot", { cache: "no-store", credentials: "same-origin" });
+    if (($("meta").textContent || "").includes("Loading")) {
+      $("meta").textContent = "Fetching live quotes…";
+    }
+    const res = await fetchWithTimeout("/api/snapshot", { cache: "no-store", credentials: "same-origin" }, 55000);
     if (res.status === 401) { location.href = "/login"; return; }
     const data = await res.json();
     if (!data.ok) {
@@ -901,10 +913,13 @@ async function refresh() {
     $("footer").textContent = (data.disclaimer || "Not financial advice.") + " Admin edits positions; guest read-only. No order placement.";
     updateKpis();
   } catch (e) {
-    $("meta").textContent = "Fetch failed: " + e.message;
+    const aborted = e && (e.name === "AbortError" || /abort/i.test(String(e.message || "")));
+    $("meta").textContent = aborted ? "Snapshot timed out — retrying…" : ("Fetch failed: " + e.message);
     $("live-dot").classList.add("stale");
     $("quote-warn").classList.add("show");
-    $("quote-warn").textContent = "Network error refreshing snapshot.";
+    $("quote-warn").textContent = aborted
+      ? "Snapshot timed out (Yahoo slow). Will retry on next poll."
+      : "Network error refreshing snapshot.";
   }
 }
 
