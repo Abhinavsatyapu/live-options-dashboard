@@ -1,7 +1,10 @@
 """Live options plan dashboard — Yahoo Finance quotes + option chains."""
 from __future__ import annotations
 
+import hashlib
 import math
+import os
+import secrets
 import threading
 import time
 from datetime import datetime, timezone, date
@@ -10,9 +13,9 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 import requests
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -599,14 +602,194 @@ def build_snapshot() -> dict:
 app = FastAPI(title="Live Options Dashboard")
 STATIC = Path(__file__).parent / "static"
 
+SESSION_MAX_AGE = 30 * 24 * 3600  # ~30 days
+SESSION_SECRET = os.environ.get("SESSION_SECRET") or ""
+# Secure cookies on Render / HTTPS; allow plain HTTP for local dev
+_HTTPS_ONLY = bool(os.environ.get("RENDER")) or os.environ.get("FORCE_SECURE_COOKIE", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# Fail-closed: empty env => no valid logins
+_ADMIN_PASSWORD = os.environ.get("DASH_ADMIN_PASSWORD") or ""
+_GUEST_PASSWORD = os.environ.get("DASH_GUEST_PASSWORD") or ""
+_USERS: dict[str, dict[str, str]] = {}
+if _ADMIN_PASSWORD:
+    _USERS["abhinav"] = {"password": _ADMIN_PASSWORD, "role": "admin"}
+if _GUEST_PASSWORD:
+    _USERS["guest"] = {"password": _GUEST_PASSWORD, "role": "guest"}
+
+# Basic failed-login rate limit: IP -> list of recent failure timestamps
+_login_fails: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+_FAIL_WINDOW = 300.0  # 5 minutes
+_FAIL_LIMIT = 8
+_FAIL_DELAY_SEC = 1.25
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip() or "unknown"
+    if request.client:
+        return request.client.host or "unknown"
+    return "unknown"
+
+
+def _too_many_failures(ip: str) -> bool:
+    now = time.time()
+    with _login_lock:
+        hits = [t for t in _login_fails.get(ip, []) if now - t < _FAIL_WINDOW]
+        _login_fails[ip] = hits
+        return len(hits) >= _FAIL_LIMIT
+
+
+def _record_failure(ip: str) -> None:
+    now = time.time()
+    with _login_lock:
+        hits = [t for t in _login_fails.get(ip, []) if now - t < _FAIL_WINDOW]
+        hits.append(now)
+        _login_fails[ip] = hits
+
+
+def _clear_failures(ip: str) -> None:
+    with _login_lock:
+        _login_fails.pop(ip, None)
+
+
+def _session_user(request: Request) -> Optional[dict[str, str]]:
+    user = request.session.get("user")
+    role = request.session.get("role")
+    if isinstance(user, str) and user and isinstance(role, str) and role:
+        return {"user": user, "role": role}
+    return None
+
+
+def _is_public(path: str, method: str) -> bool:
+    if path == "/api/health":
+        return True
+    if path == "/login" and method in ("GET", "POST", "HEAD", "OPTIONS"):
+        return True
+    return False
+
+
+@app.middleware("http")
+async def require_auth(request: Request, call_next):
+    path = request.url.path
+    if _is_public(path, request.method):
+        return await call_next(request)
+    # Static login assets are not needed; everything else requires a session
+    if _session_user(request) is None:
+        if path.startswith("/api/") or path.startswith("/static/"):
+            # APIs and static files: 401 (pages under /static shouldn't leak HTML)
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+        return RedirectResponse(url="/login", status_code=303)
+    return await call_next(request)
+
+
+# Session cookie: signed, HttpOnly (Starlette default), SameSite=Lax, ~30d
+# Middleware added last so it wraps the auth middleware (outermost).
+if not SESSION_SECRET:
+    # Still start, but sessions cannot be trusted / logins will fail closed below.
+    # Use a random ephemeral secret so the app boots; cookies won't survive restart.
+    SESSION_SECRET = secrets.token_urlsafe(32)
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    session_cookie="dash_session",
+    max_age=SESSION_MAX_AGE,
+    same_site="lax",
+    https_only=_HTTPS_ONLY,
+)
+
 
 @app.get("/api/health")
 def health():
     return {"ok": True}
 
 
+@app.get("/login")
+def login_page(request: Request):
+    if _session_user(request):
+        return RedirectResponse(url="/", status_code=303)
+    return FileResponse(STATIC / "login.html")
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+):
+    ip = _client_ip(request)
+    wants_json = "application/json" in (request.headers.get("accept") or "")
+
+    def fail(status: int, error: str, code: str):
+        if wants_json:
+            return JSONResponse({"ok": False, "error": error}, status_code=status)
+        return RedirectResponse(url=f"/login?e={code}", status_code=303)
+
+    if not _USERS:
+        time.sleep(_FAIL_DELAY_SEC)
+        return fail(503, "Sign-in is not configured on the server.", "cfg")
+
+    if _too_many_failures(ip):
+        time.sleep(_FAIL_DELAY_SEC)
+        return fail(429, "Too many attempts. Wait a moment and try again.", "rate")
+
+    user_key = (username or "").strip().lower()
+    record = _USERS.get(user_key)
+    pw = password or ""
+    # Hash then constant-time compare (handles unequal password lengths safely)
+    def _pw_digest(s: str) -> bytes:
+        return hashlib.sha256(s.encode("utf-8")).digest()
+
+    expected = record["password"] if record else secrets.token_hex(16)
+    matched = secrets.compare_digest(_pw_digest(pw), _pw_digest(expected))
+    ok = bool(record) and matched
+
+    if not ok:
+        _record_failure(ip)
+        time.sleep(_FAIL_DELAY_SEC)
+        return fail(401, "Invalid username or password.", "1")
+
+    _clear_failures(ip)
+    request.session.clear()
+    request.session["user"] = user_key
+    request.session["role"] = record["role"]
+    if wants_json:
+        return JSONResponse({"ok": True, "user": user_key, "role": record["role"], "next": "/"})
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    wants_json = "application/json" in (request.headers.get("accept") or "")
+    if wants_json:
+        return JSONResponse({"ok": True})
+    return RedirectResponse(url="/login", status_code=303)
+
+
+@app.get("/logout")
+def logout_get(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=303)
+
+
+@app.get("/api/me")
+def me(request: Request):
+    info = _session_user(request)
+    if not info:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    return {"ok": True, **info}
+
+
 @app.get("/api/snapshot")
-def snapshot():
+def snapshot(request: Request):
+    # Auth enforced by middleware; keep view-only for all roles
     now = time.time()
     with _cache_lock:
         if _cache["data"] is not None and (now - _cache["ts"]) < CACHE_TTL:
@@ -629,11 +812,11 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
-if STATIC.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+# Do not mount /static publicly — login.html & index.html are served via routes.
+# (Prevents unauthenticated fetch of /static/index.html)
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="0.0.0.0", port=int(__import__("os").environ.get("PORT", 8000)), reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=False)
