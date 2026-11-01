@@ -349,6 +349,36 @@ def evaluate_position(pos: dict, session, covers: dict[str, float], today_et: da
     return alerts
 
 
+
+def _list_open_http(url: str) -> list[dict]:
+    """Read open positions over Neon's HTTPS SQL endpoint (port 443).
+    The box can't reach Postgres port 5432, so this is the primary path here."""
+    import requests
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname
+    r = requests.post(
+        f"https://{host}/sql",
+        headers={"Neon-Connection-String": url},
+        json={"query": "SELECT * FROM positions WHERE status=$1 ORDER BY entry_date DESC, id DESC",
+              "params": ["open"]},
+        timeout=20,
+    )
+    r.raise_for_status()
+    d = r.json()
+    numeric = {f["name"] for f in d.get("fields", []) if f.get("dataTypeID") in (20, 21, 23, 700, 701, 1700)}
+    out = []
+    for row in d.get("rows", []):
+        rr = dict(row)
+        for k in numeric:
+            v = rr.get(k)
+            if isinstance(v, str):
+                try:
+                    rr[k] = int(v) if v.lstrip("-").isdigit() else float(v)
+                except ValueError:
+                    pass
+        out.append(rr)
+    return out
+
 def main() -> int:
     positions_file = None
     args = sys.argv[1:]
@@ -377,11 +407,14 @@ def main() -> int:
             print(json.dumps({"ok": False, "error": "DATABASE_URL missing"}))
             return 2
         try:
-            ensure_schema()
-            opens = list_positions("open")
-        except Exception as e:
-            print(json.dumps({"ok": False, "error": str(e)}))
-            return 2
+            opens = _list_open_http(database_url())
+        except Exception as http_err:
+            try:
+                ensure_schema()
+                opens = list_positions("open")
+            except Exception as e:
+                print(json.dumps({"ok": False, "error": f"http: {http_err}; pg: {e}"}))
+                return 2
 
     import requests
     sess = requests.Session()
