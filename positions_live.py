@@ -157,6 +157,14 @@ def default_rules(signal_type: str, side: str, structure: str) -> dict:
     }
 
 
+def is_reversal_put(pos: dict) -> bool:
+    side = (pos.get("side") or "").lower()
+    if side != "put":
+        return False
+    st = (pos.get("signal_type") or "").upper()
+    return any(k in st for k in ("REV", "ABSORB", "PUTS", "CHASE", "REVERSAL"))
+
+
 def enrich_positions(yahoo, quotes: dict, positions: list[dict], closed_week: list[dict] | None = None) -> dict:
     state = load_exit_state()
     enriched = []
@@ -225,6 +233,35 @@ def enrich_positions(yahoo, quotes: dict, positions: list[dict], closed_week: li
                 pass
         if mark is not None and fill > 0 and mark <= fill * 0.5 and "ADVERSE_50" not in kinds:
             kinds.append("ADVERSE_50")
+
+        # EARNINGS BEFORE EXPIRY — live badge/alert (once-style via kinds list)
+        try:
+            from earnings import earnings_before_expiry
+            info_e = earnings_before_expiry(
+                pos["ticker"],
+                exp,
+                as_of=today,
+                entry_date=pos.get("entry_date"),
+            )
+            if info_e.get("beforeExpiry") and "EARNINGS" not in kinds:
+                kinds.append("EARNINGS")
+        except Exception:
+            pass
+
+        # ROLL for Reversals puts at ≤2 DTE (alert only)
+        if (
+            is_reversal_put(pos)
+            and exp
+            and "ROLL" not in kinds
+            and "STOP_HIT" not in kinds
+            and "TARGET_HIT" not in kinds
+        ):
+            try:
+                ed = date.fromisoformat(str(exp)[:10])
+                if (ed - today).days <= 2:
+                    kinds.append("ROLL")
+            except Exception:
+                pass
 
         row = {
             **pos,

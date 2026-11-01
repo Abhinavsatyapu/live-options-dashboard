@@ -199,6 +199,7 @@
   .b-EXIT_FRIDAY, .b-EXIT_EXPIRY { background: #3a3010; color: var(--amber); }
   .b-COVER_HIT { background: #2a2540; color: var(--purple); }
   .b-EARNINGS { background: #3a2a10; color: #ffcc80; }
+  .b-ROLL { background: #3a3010; color: var(--amber); }
   .details {
     margin-top: 8px; border-top: 1px solid var(--border-soft); padding-top: 8px;
   }
@@ -425,7 +426,9 @@ function kv(k, v, extra="", cls="") {
 function badges(kinds, earningsBadge) {
   let html = "";
   (kinds || []).forEach(k => {
-    html += `<span class="badge b-${k}">${k.replace(/_/g, " ")}</span>`;
+    if (k === "EARNINGS" && earningsBadge) return; // detailed earnings badge below
+    const label = k === "ROLL" ? "ROLL OR CLOSE — 2 DTE" : k.replace(/_/g, " ");
+    html += `<span class="badge b-${k}">${label}</span>`;
   });
   if (earningsBadge) html += `<span class="badge b-EARNINGS">${earningsBadge}</span>`;
   return html;
@@ -766,8 +769,14 @@ function countAlerts(data, positions) {
   let n = 0;
   const seen = new Set();
   const add = (arr) => (arr || []).forEach(r => {
-    (r.alertKinds || []).forEach(k => { const key = (r.symbol || r.sym || r.ticker) + ":" + k; if (!seen.has(key)) { seen.add(key); n++; } });
-    if (r.earningsBadge) { const key = (r.symbol || r.sym || r.ticker) + ":E"; if (!seen.has(key)) { seen.add(key); n++; } }
+    const sym = (r.symbol || r.sym || r.ticker || "");
+    const kinds = r.alertKinds || [];
+    kinds.forEach(k => { const key = sym + ":" + k; if (!seen.has(key)) { seen.add(key); n++; } });
+    // earningsBadge shares the EARNINGS slot when kind already present
+    if (r.earningsBadge) {
+      const key = kinds.includes("EARNINGS") ? (sym + ":EARNINGS") : (sym + ":E");
+      if (!seen.has(key)) { seen.add(key); n++; }
+    }
   });
   if (data) {
     add(data.earlySureShots); add(data.weeklyBullish); add(data.weeklySqueeze); add(data.reversalBearish);

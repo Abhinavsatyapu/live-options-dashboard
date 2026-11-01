@@ -204,6 +204,14 @@ def friday_of_week(d: date) -> date:
     return d.fromordinal(d.toordinal() + (4 - d.weekday()))
 
 
+def is_reversal_put(pos: dict) -> bool:
+    side = (pos.get("side") or "").lower()
+    if side != "put":
+        return False
+    st = (pos.get("signal_type") or "").upper()
+    return any(k in st for k in ("REV", "ABSORB", "PUTS", "CHASE", "REVERSAL"))
+
+
 def evaluate_position(pos: dict, session, covers: dict[str, float], today_et: date) -> list[dict]:
     alerts = []
     pid = pos["id"]
@@ -290,6 +298,50 @@ def evaluate_position(pos: dict, session, covers: dict[str, float], today_et: da
                 "underlying": und, "cover": float(cover), "mark": mark,
             })
 
+    # EARNINGS BEFORE EXPIRY (once per position via dedupe) — alert only
+    try:
+        from earnings import earnings_before_expiry
+        info = earnings_before_expiry(
+            ticker,
+            expiry,
+            sess=session,
+            as_of=today_et,
+            entry_date=pos.get("entry_date"),
+        )
+        if info.get("beforeExpiry"):
+            ne = info.get("nextEarnings")
+            alerts.append({
+                "id": pid, "ticker": ticker, "kind": "EARNINGS",
+                "message": (
+                    f"{ticker} EARNINGS BEFORE EXPIRY on {ne} — "
+                    "exit or reduce before the report"
+                ),
+                "nextEarnings": ne,
+                "expiry": exp_d.isoformat() if exp_d else None,
+                "mark": mark,
+            })
+    except Exception:
+        pass
+
+    # ROLL for Reversals puts at ≤2 DTE (alert only; do not automate)
+    # Skip if stop or target already hit this check — those take priority.
+    kinds_so_far = {a["kind"] for a in alerts}
+    if (
+        is_reversal_put(pos)
+        and exp_d is not None
+        and (exp_d - today_et).days <= 2
+        and "STOP_HIT" not in kinds_so_far
+        and "TARGET_HIT" not in kinds_so_far
+    ):
+        dte = (exp_d - today_et).days
+        alerts.append({
+            "id": pid, "ticker": ticker, "kind": "ROLL",
+            "message": f"{ticker} ROLL OR CLOSE — 2 DTE (DTE={dte}, expiry {exp_d.isoformat()})",
+            "expiry": exp_d.isoformat(),
+            "dte": dte,
+            "mark": mark,
+        })
+
     for a in alerts:
         a["signal_type"] = pos.get("signal_type")
         a["quantity"] = qty
@@ -362,15 +414,26 @@ def main() -> int:
 
     st = load_state()
     seen = st.setdefault("seen", {})
+    # Price used to sit in the message and broke dedupe; key by id+kind
+    # (time-based kinds once per ET day so Friday / expiry can re-fire next day).
+    TIME_BASED = {"EXIT_FRIDAY", "EXIT_EXPIRY"}
+    today_key = today_et.isoformat()
     new_alerts = []
     for a in all_alerts:
-        key = f"{a.get('id')}:{a.get('kind')}:{a.get('message','')[:80]}"
+        kind = a.get("kind")
+        if kind in TIME_BASED:
+            key = f"{a.get('id')}:{kind}:{today_key}"
+        else:
+            key = f"{a.get('id')}:{kind}"
         if key not in seen:
             new_alerts.append(a)
-            seen[key] = {"first_seen": now_iso(), "count": 1}
+            seen[key] = {"first_seen": now_iso(), "count": 1, "kind": kind}
         else:
             seen[key]["count"] = int(seen[key].get("count", 1)) + 1
             seen[key]["last_seen"] = now_iso()
+    # Keep a latest snapshot for dashboard badge helpers
+    st["latest"] = all_alerts
+    st["checked_at"] = now_iso()
     # prune closed keys older — keep last 500
     if len(seen) > 500:
         items = sorted(seen.items(), key=lambda kv: kv[1].get("last_seen") or kv[1].get("first_seen") or "")
