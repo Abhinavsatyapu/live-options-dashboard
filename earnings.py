@@ -10,8 +10,11 @@ import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import requests
+
+ET = ZoneInfo("America/New_York")
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -22,7 +25,8 @@ _MAX_AGE_H = 24.0
 
 
 def _today() -> date:
-    return datetime.now(timezone.utc).date()
+    # US equity earnings / expiry calendar — ET, not UTC or IST
+    return datetime.now(ET).date()
 
 
 def _session() -> requests.Session:

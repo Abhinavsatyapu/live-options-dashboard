@@ -742,7 +742,7 @@ def build_snapshot() -> dict:
             exp = rr.get("expiry") or (rr.get("plan") or {}).get("expiry")
             if earnings_before_expiry and sym and exp:
                 try:
-                    info = earnings_before_expiry(sym, exp)
+                    info = earnings_before_expiry(sym, exp, as_of=datetime.now(ET).date())
                     rr["earnings"] = info
                     rr["earningsBadge"] = info.get("badge")
                     if info.get("beforeExpiry"):
@@ -765,7 +765,7 @@ def build_snapshot() -> dict:
         sym = ee.get("sym") or ""
         if earnings_before_expiry and sym and exp:
             try:
-                info = earnings_before_expiry(sym, exp)
+                info = earnings_before_expiry(sym, exp, as_of=datetime.now(ET).date())
                 ee["earnings"] = info
                 ee["earningsBadge"] = info.get("badge")
                 if info.get("beforeExpiry"):
@@ -1165,6 +1165,7 @@ def positions_list(request: Request):
                 info_e = earnings_before_expiry(
                     p["ticker"],
                     p.get("expiry"),
+                    as_of=datetime.now(ET).date(),
                     entry_date=p.get("entry_date"),
                 )
                 p["earnings"] = info_e
