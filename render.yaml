@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: live-options-dashboard
+    env: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: DASH_ADMIN_PASSWORD
+        sync: false
+      - key: DASH_GUEST_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: RENDER
+        value: "true"
