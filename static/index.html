@@ -123,6 +123,8 @@
     max-height: 3.2em; overflow: hidden;
   }
   #intraday-rule { max-height: none; }
+  .approach-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; }
+  .approach-row .note { margin: 0; }
   .btnote.expanded { max-height: none; }
   .btnote-toggle {
     background: none; border: none; color: var(--blue); font-size: 11px; font-weight: 650;
@@ -175,6 +177,8 @@
   html[data-view="rev"] a[data-view="rev"] .count { background: #1e3a5f; color: #cfe2ff; }
   .card.triggered { border-color: #2a5a3a; box-shadow: inset 0 0 0 1px #1e3a28; }
   .card.stop-side { border-color: #5a2a2a; box-shadow: inset 0 0 0 1px #3d1e24; }
+  .card.approaching { border-color: #5a4a20; box-shadow: inset 0 0 0 1px #3a3010; }
+  .st-APPROACHING { background: #3a3010; color: var(--amber); }
   .st-STOP_SIDE, .st-LEVELS { background: #3d1e24; color: var(--red); }
   .st-LEVELS { background: #2a3140; color: #c0c8d8; }
   .tab .count {
@@ -360,6 +364,10 @@
     <span class="rule-bull">Intraday bullish: long if the previous regular-session high breaks. Stop is the previous regular-session low. FADE, Book A Neutral, and Book B Neutral are not shown.</span>
     <span class="rule-rev">Intraday reversal: short if the previous regular-session low breaks. Stop is the previous regular-session high.</span>
   </div>
+  <div class="approach-row intraday-only">
+    <button type="button" class="btn btn-sm" id="approach-test">Test alert sound</button>
+    <span class="note" id="approach-hint" hidden>Tap anywhere to enable the entry alert sound.</span>
+  </div>
 
   <section class="panel active plan-only" id="panel-early" role="tabpanel"><div class="skeleton" id="sk-early"><div class="sk"></div><div class="sk"></div></div></section>
   <section class="panel plan-only" id="panel-weekly" role="tabpanel"></section>
@@ -523,7 +531,7 @@ function usMarketStatus(now = new Date()) {
   // Approximate US/Eastern hours Mon–Fri 09:30–16:00
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false
+      timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23"
     }).formatToParts(now);
     const map = Object.fromEntries(parts.filter(p => p.type !== "literal").map(p => [p.type, p.value]));
     const wd = map.weekday;
@@ -623,7 +631,9 @@ function intradayCard(r) {
       ${kv("Today high", fmt(r.todayHigh), "", "secondary")}
       ${kv("Today low", fmt(r.todayLow), "", "secondary")}
       ${kv("Prev session", r.prevDayDate || "—", "", "secondary")}`;
-  const tone = r.triggered ? "triggered" : (r.stopSideTraded ? "stop-side" : "");
+  const tone = (r.status === "TRIGGERED" || r.triggered) ? "triggered"
+    : ((r.status === "STOP_SIDE" || r.stopSideTraded) ? "stop-side"
+    : (r.status === "APPROACHING" ? "approaching" : ""));
   return `<div class="card ${tone}">
     <div class="row-top">
       <div>
@@ -907,6 +917,11 @@ function countAlerts(data, positions) {
   });
   if (data) {
     add(data.earlySureShots); add(data.weeklyBullish); add(data.weeklySqueeze); add(data.reversalBearish);
+    (data.intradayBullish || []).concat(data.intradayReversals || []).forEach(r => {
+      if (r.status !== "APPROACHING") return;
+      const key = (r.symbol || r.ticker || "") + ":APPROACHING";
+      if (!seen.has(key)) { seen.add(key); n++; }
+    });
   }
   add(positions || []);
   return n;
@@ -1028,6 +1043,128 @@ function scheduleCatchup() {
     refresh({ positions: false });
   }, delay);
 }
+const APPROACH_SOUND_KEY = "intradayApproachSounded";
+let approachCtx = null;
+let approachUnlocked = false;
+let approachQueue = [];
+let approachMemory = { day: "", keys: new Set() };
+
+function etDateString() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit"
+    }).format(new Date());
+  } catch (e) {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+function approachStore() {
+  try { return window.localStorage; } catch (e) { return null; }
+}
+function soundedToday() {
+  const day = etDateString();
+  const store = approachStore();
+  if (!store) return approachMemory.day === day ? approachMemory.keys : new Set();
+  try {
+    const raw = JSON.parse(store.getItem(APPROACH_SOUND_KEY) || "null");
+    if (!raw || raw.day !== day || !Array.isArray(raw.keys)) return new Set();
+    return new Set(raw.keys);
+  } catch (e) {
+    return new Set();
+  }
+}
+function markSounded(keys) {
+  const day = etDateString();
+  const set = soundedToday();
+  keys.forEach(key => set.add(key));
+  const store = approachStore();
+  if (store) {
+    try {
+      store.setItem(APPROACH_SOUND_KEY, JSON.stringify({ day, keys: [...set] }));
+      return;
+    } catch (e) { /* fall through */ }
+  }
+  approachMemory = { day, keys: set };
+}
+function approachKey(row) {
+  const sym = row.symbol || row.ticker || "";
+  if (!sym) return "";
+  return (row.side === "short" ? "short" : "long") + ":" + sym;
+}
+function updateApproachHint() {
+  const hint = $("approach-hint");
+  if (!hint) return;
+  const show = approachQueue.length > 0 && !approachUnlocked && (VIEW === "bull" || VIEW === "rev");
+  hint.hidden = !show;
+}
+function playApproachChime() {
+  if (!approachCtx) return;
+  const now = approachCtx.currentTime;
+  const osc = approachCtx.createOscillator();
+  const gain = approachCtx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(784, now);
+  osc.frequency.setValueAtTime(1046, now + 0.11);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.22, now + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+  osc.connect(gain);
+  gain.connect(approachCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.36);
+}
+function flushApproachSounds() {
+  if (document.visibilityState === "hidden") return;
+  if (!approachUnlocked || !approachQueue.length) return;
+  const batch = approachQueue.splice(0, approachQueue.length);
+  markSounded(batch);
+  batch.forEach((_key, i) => setTimeout(playApproachChime, i * 420));
+  updateApproachHint();
+}
+function noteApproachingAlerts(rows) {
+  if (VIEW !== "bull" && VIEW !== "rev") return;
+  const heard = soundedToday();
+  const queued = new Set(approachQueue);
+  (rows || []).forEach(row => {
+    if (!row || row.status !== "APPROACHING" || row.stopSideTraded) return;
+    const key = approachKey(row);
+    if (!key || heard.has(key) || queued.has(key)) return;
+    approachQueue.push(key);
+    queued.add(key);
+  });
+  updateApproachHint();
+  flushApproachSounds();
+}
+function unlockApproachAudio(playTest) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!approachCtx) approachCtx = new AC();
+  const ready = () => {
+    approachUnlocked = approachCtx.state === "running";
+    if (!approachUnlocked) return;
+    if (approachQueue.length) flushApproachSounds();
+    else if (playTest) playApproachChime();
+    updateApproachHint();
+  };
+  if (approachCtx.state === "suspended") {
+    approachCtx.resume().then(ready).catch(() => {});
+    return;
+  }
+  ready();
+}
+document.addEventListener("pointerdown", () => unlockApproachAudio(false));
+document.addEventListener("keydown", () => unlockApproachAudio(false));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") flushApproachSounds();
+});
+const approachTest = $("approach-test");
+if (approachTest) {
+  approachTest.addEventListener("pointerdown", (ev) => {
+    ev.stopPropagation();
+    unlockApproachAudio(true);
+  });
+}
+
 function isChainNoise(message) {
   const text = String(message || "");
   return /401|\/v7\/finance\/options|option chains:/i.test(text);
@@ -1115,8 +1252,16 @@ async function refresh(opts) {
     if (!LAST_DATA) $("meta").textContent = "Loading signals…";
     const res = await fetchWithTimeout("/api/snapshot", { cache: "no-store", credentials: "same-origin" }, 20000);
     if (res.status === 401) { location.href = "/login"; return; }
-    const data = await res.json();
-    if (!data.ok) {
+    const raw = await res.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      // Safari reports invalid JSON as "The string did not match the expected pattern."
+      noteSnapshotFailure(new Error("Could not read signals (" + res.status + ")"));
+      return;
+    }
+    if (!data || !data.ok) {
       noteSnapshotFailure(new Error(data.error || String(res.status)));
       return;
     }
@@ -1191,6 +1336,7 @@ async function refresh(opts) {
     const staleAge = data.quotesStaleAgeSec;
     if (VIEW === "bull" || VIEW === "rev") {
       applyIntradayQuoteWarn(data, VIEW === "bull" ? ibull : irev, pending);
+      noteApproachingAlerts(VIEW === "bull" ? ibull : irev);
     } else {
       applyPlanQuoteWarn(data, spyPx, pending, staleAge);
     }

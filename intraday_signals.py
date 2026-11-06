@@ -161,6 +161,34 @@ def select_latest(prints: list, side: str) -> list[dict]:
     return [row for _key, row in chosen]
 
 
+# Alert once price is within a dollar of the entry and has not crossed it yet.
+APPROACH_DOLLARS = 1.0
+
+
+def _cents(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return round(float(value) + 1e-9, 2)
+
+
+def _approach_gap(prices: tuple, entry: float, *, below: bool) -> Optional[float]:
+    """Smallest dollar gap still on the near side of entry, inside the $1 band."""
+    entry_px = _cents(entry)
+    if entry_px is None:
+        return None
+    gaps = []
+    for raw in prices:
+        px = _cents(raw)
+        if px is None:
+            continue
+        if below and entry_px - APPROACH_DOLLARS <= px < entry_px:
+            gaps.append(round(entry_px - px, 2))
+        elif (not below) and entry_px < px <= entry_px + APPROACH_DOLLARS:
+            gaps.append(round(px - entry_px, 2))
+    positive = [gap for gap in gaps if gap > 0]
+    return min(positive) if positive else None
+
+
 def _at_or_above(last: Optional[float], extreme: Optional[float], level: float) -> bool:
     return (last is not None and last >= level) or (extreme is not None and extreme >= level)
 
@@ -207,6 +235,8 @@ def apply_levels(
     out["prevDayLow"] = prev_low
     out["prevDayDate"] = prev_date
     out["tradedThroughStop"] = False
+    out["approaching"] = False
+    out["distanceToEntry"] = None
     if prev_high is None or prev_low is None:
         out["entry"] = None
         out["stop"] = None
@@ -237,6 +267,7 @@ def apply_levels(
     if broke_entry:
         out["triggered"] = True
         out["stopSideTraded"] = False
+        out["approaching"] = False
         out["tradedThroughStop"] = bool(through_stop)
         out["status"] = "TRIGGERED"
         out["statusNote"] = "Entry triggered"
@@ -246,11 +277,26 @@ def apply_levels(
     if stop_before_entry:
         out["triggered"] = False
         out["stopSideTraded"] = True
+        out["approaching"] = False
         out["status"] = "STOP_SIDE"
         out["statusNote"] = stop_note
         return out
+    gap = (
+        _approach_gap((last, today_low), entry, below=False)
+        if side == "short"
+        else _approach_gap((last, today_high), entry, below=True)
+    )
     out["triggered"] = False
     out["stopSideTraded"] = False
+    if gap is not None:
+        out["approaching"] = True
+        out["distanceToEntry"] = gap
+        out["status"] = "APPROACHING"
+        if side == "short":
+            out["statusNote"] = f"Within $1 of yesterday's low — take short entry · ${gap:.2f} left"
+        else:
+            out["statusNote"] = f"Within $1 of yesterday's high — take long entry · ${gap:.2f} left"
+        return out
     out["status"] = "WAITING"
     out["statusNote"] = pending_note
     return out
