@@ -1,5 +1,5 @@
 {
-  "asof": "2026-11-06T21:26:26",
+  "asof": "2026-11-06T21:49:08",
   "standing_rule": "Bullish only from Weekly; bearish only from Reversals; never Weekly BEARISH.",
   "sure_shots": [
     {
@@ -15,14 +15,14 @@
       "stop": 130.16,
       "structure": "atm_put",
       "size": "FULL",
-      "why": "D+1 ABSORBED CALLS — frozen flow n17 82%/+5.55%",
+      "why": "D+1 ABSORBED CALLS \u2014 frozen flow n17 82%/+5.55%",
       "days_early": "1 if entering D+1 close vs D+2"
     },
     {
       "side": "bearish",
       "tier": "S",
       "source": "reversals",
-      "sym": "TEAM",
+      "sym": "MDB",
       "session": "2026-11-06",
       "setup": "ABSORBED CALLS IN",
       "confidence": 0.82,
@@ -31,6 +31,23 @@
       "stop": null,
       "structure": "atm_put",
       "size": "manage",
+      "why": "ABSORBED event lean None D+1 None",
+      "days_early": "1 vs D+2",
+      "star": true
+    },
+    {
+      "side": "bearish",
+      "tier": "S",
+      "source": "reversals",
+      "sym": "TEAM",
+      "session": "2026-11-06",
+      "setup": "ABSORBED CALLS ARMED",
+      "confidence": 0.82,
+      "entry": "D+1 close or D+2 break of D+1 low",
+      "trigger": null,
+      "stop": null,
+      "structure": "atm_put",
+      "size": "FULL",
       "why": "ABSORBED event lean None D+1 None",
       "days_early": "1 vs D+2",
       "star": true
@@ -48,60 +65,60 @@
       "stop": 242.05,
       "structure": "atm_put",
       "size": "FULL",
-      "why": "D+1 ABSORBED CALLS — frozen flow n17 82%/+5.55%",
+      "why": "D+1 ABSORBED CALLS \u2014 frozen flow n17 82%/+5.55%",
       "days_early": "1 if entering D+1 close vs D+2"
     }
   ],
   "forming_watch": [],
   "counts": {
-    "sure": 3,
+    "sure": 4,
     "forming": 0
   },
   "rules": {
     "standing_rule": "Bullish only from Weekly; bearish only from Reversals; never Weekly BEARISH.",
     "weekly_tier_S": {
       "when": "Friday close (or after Friday wall_up known)",
-      "rule": "Label is BULLISH ★ OR squeeze cell is SQ+VC3 ★ (prefer counter-trend 20<50).",
+      "rule": "Label is BULLISH \u2605 OR squeeze cell is SQ+VC3 \u2605 (prefer counter-trend 20<50).",
       "entry": "Friday close or Monday open of the following week",
-      "structure": "BULLISH ★ → ATM call ~1w; SQ+VC3 ★ → ATM/+1EM call debit ~1w; IV>100% → debit spread",
+      "structure": "BULLISH \u2605 \u2192 ATM call ~1w; SQ+VC3 \u2605 \u2192 ATM/+1EM call debit ~1w; IV>100% \u2192 debit spread",
       "evidence": {
-        "measured_BULLISH_star": "lean+wall measured n6 100% +6.1% (06/22–10/17, 13 tickers)",
-        "measured_SQ_VC3_star": "counter+sq+VC3 n26 73% +2.85%; live-forward ★ 4/4 +3.60%",
-        "live_forward_BULLISH_star_sep14_oct19": "n7 next_up 43% in this short window — size down; prefer SQ+VC3 ★ when available"
+        "measured_BULLISH_star": "lean+wall measured n6 100% +6.1% (06/22\u201310/17, 13 tickers)",
+        "measured_SQ_VC3_star": "counter+sq+VC3 n26 73% +2.85%; live-forward \u2605 4/4 +3.60%",
+        "live_forward_BULLISH_star_sep14_oct19": "n7 next_up 43% in this short window \u2014 size down; prefer SQ+VC3 \u2605 when available"
       },
-      "days_early_vs_crowd": "0–1 session (act at print / Mon open before mid-week chase)"
+      "days_early_vs_crowd": "0\u20131 session (act at print / Mon open before mid-week chase)"
     },
     "weekly_tier_A_forming": {
-      "when": "Thursday close (Mon–Thu partial lean)",
-      "rule": "20<50 AND 50>200 AND cum lean Mon–Thu ≥ 2.0× AND call days ≥ 2",
-      "action": "WATCH / stage only — do NOT full-size until Friday confirms wall_up≥2 and official BULLISH/★ or SQ+VC3 ★",
+      "when": "Thursday close (Mon\u2013Thu partial lean)",
+      "rule": "20<50 AND 50>200 AND cum lean Mon\u2013Thu \u2265 2.0\u00d7 AND call days \u2265 2",
+      "action": "WATCH / stage only \u2014 do NOT full-size until Friday confirms wall_up\u22652 and official BULLISH/\u2605 or SQ+VC3 \u2605",
       "evidence": {
-        "loo_next_up": "43.9% (18/41) — BELOW 75% bar; not a sure-shot entry alone",
-        "note": "Wall-up (≥2) is the missing midweek ingredient; unobservable until Friday 10:00 ET prints"
+        "loo_next_up": "43.9% (18/41) \u2014 BELOW 75% bar; not a sure-shot entry alone",
+        "note": "Wall-up (\u22652) is the missing midweek ingredient; unobservable until Friday 10:00 ET prints"
       },
       "days_early": "1 trading day of preparation before Friday confirmation"
     },
     "reversal_tier_S": {
       "when": "D+1 complete",
-      "rule": "Event lean ≥1.5×, D+1 breaks EVENT LOW before high with lean ≥1.7×, D+1 flow = ABSORBED CALLS",
+      "rule": "Event lean \u22651.5\u00d7, D+1 breaks EVENT LOW before high with lean \u22651.7\u00d7, D+1 flow = ABSORBED CALLS",
       "entry": "D+1 close (1 session early) or official D+2 first bar below D+1 low",
       "stop": "D+1 high",
-      "structure": "ATM put ~1–2w (spread if ATM debit very rich / IV>100%)",
+      "structure": "ATM put ~1\u20132w (spread if ATM debit very rich / IV>100%)",
       "size": "FULL",
       "evidence": {
-        "frozen_rule_flow": "ABSORBED CALLS n17 82% win +5.55% mean (06/18–10/29)",
-        "capture_sample": "n3 unique (META +0.8%, HIMS −3.1%, SMR armed) — thin; lean on frozen n17"
+        "frozen_rule_flow": "ABSORBED CALLS n17 82% win +5.55% mean (06/18\u201310/29)",
+        "capture_sample": "n3 unique (META +0.8%, HIMS \u22123.1%, SMR armed) \u2014 thin; lean on frozen n17"
       },
       "days_early": "1 session vs D+2 official entry if using D+1 close"
     },
     "reversal_tier_A_forming": {
       "when": "On WATCHING after event day",
-      "rule": "Event lean ≥ 2.5× (star preferred); wait for D+1 ABSORBED before Tier S",
+      "rule": "Event lean \u2265 2.5\u00d7 (star preferred); wait for D+1 ABSORBED before Tier S",
       "action": "Alert only"
     },
     "validation": {
-      "weekly_midweek": "Leave-one-week-out Sep14–Oct19: no midweek-only rule reached ≥75% next-week UP with n≥5",
-      "weekly_sure_shot": "Use Friday-confirmed ★ / SQ+VC3 ★ (measured stats), not raw midweek lean",
+      "weekly_midweek": "Leave-one-week-out Sep14\u2013Oct19: no midweek-only rule reached \u226575% next-week UP with n\u22655",
+      "weekly_sure_shot": "Use Friday-confirmed \u2605 / SQ+VC3 \u2605 (measured stats), not raw midweek lean",
       "reversal": "Sure-shot = ABSORBED CALLS filter on frozen SHORT rule"
     }
   }

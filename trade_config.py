@@ -1,5 +1,5 @@
 # Auto-generated trade config — bullish/squeeze from Weekly only; bearish from Reversals only.
-# Updated 2026-11-06 Zone Monitor capture (Reversals live; Weekly week-of-2026-11-02 provisional).
+# Updated 2026-11-06 ~11:10 ET Zone Monitor (TEAM exited IN A SHORT; Weekly 2026-11-02 wtd provisional).
 WEEKLY_SIGNALS = [
   {
     "symbol": "ENPH",
@@ -176,25 +176,26 @@ REVERSAL_BEARISH = [
     "symbol": "TEAM",
     "section": "reversal",
     "setup": "ABSORBED CALLS",
-    "tag": "★ IN A SHORT FULL manage",
+    "tag": "★ EXITED IN A SHORT (portal removed ~11:10 ET)",
     "structure": "atm",
     "side": "put",
-    "note": "Already short @158.99; cover above 165.32; last ~154.30; ATM put expression to manage; absorbed-calls FULL",
-    "recommended": True,
-    "skip": False,
+    "note": "Was IN @158.99 cover 165.32 last~154; Zone Monitor removed from IN A SHORT as of 11:10 ET (spot ~154). Divergence still lists ABSORBED; treat as exited/manage flat. Do not re-enter without fresh trigger.",
+    "recommended": False,
+    "skip": True,
     "expiry": "2026-11-13",
     "long_strike": 155.0,
     "short_strike": 155.0,
     "long_occ": "TEAM261113P00155000",
     "short_occ": "TEAM261113P00155000",
     "debit": 7.35,
-    "size": 1,
-    "risk_pct": 0.73,
+    "size": 0,
+    "risk_pct": 0,
     "trigger": None,
     "sl": None,
-    "already_in": True,
+    "already_in": False,
     "entry": 158.99,
     "cover_above": 165.32,
+    "exited_at": "2026-11-06T11:10ET",
     "is_atm": True
   },
   {
