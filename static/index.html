@@ -28,6 +28,8 @@
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0;
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
     background: var(--bg); color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 14px; line-height: 1.4;
@@ -130,6 +132,7 @@
     -webkit-overflow-scrolling: touch; scrollbar-width: none; padding: 0 4px;
   }
   .tabs::-webkit-scrollbar { display: none; }
+  button, .tab, input, select, textarea { touch-action: manipulation; }
   .tab {
     background: var(--panel); border: 1px solid var(--border); color: var(--muted);
     padding: 10px 12px; border-radius: 10px; cursor: pointer; font-weight: 650;
@@ -248,7 +251,7 @@
     border-radius: 8px; padding: 12px 10px; font-size: 16px; min-height: 44px;
   }
   input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px rgba(91,156,255,0.18); }
-  textarea { min-height: 72px; font-size: 14px; }
+  textarea { min-height: 72px; font-size: 16px; }
   .summary-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
   .admin-only { display: none; }
   body.is-admin .admin-only { display: block; }
@@ -276,7 +279,7 @@
       </div>
       <div class="meta-row">
         <span class="dot" id="live-dot" title="Live"></span>
-        <span id="meta">Connecting…</span>
+        <span id="meta">Loading signals…</span>
         <span id="signals-asof"></span>
       </div>
     </div>
@@ -395,9 +398,19 @@ const moneyAbs = (n, d=0) => {
 
 let ME = { user: null, role: "guest", canEdit: false };
 let LAST_SNAP_TS = 0;
+let LAST_LIVE = false;
+let REFRESH_MS = 120000;
+let STALE_AFTER_SEC = 150;
 let PREV_PX = {};
 let POS_SUMMARY = null;
 let LAST_DATA = null;
+let refreshInFlight = false;
+let posInFlight = false;
+let steadyTimer = null;
+let catchupTimer = null;
+let catchupLeft = 0;
+let catchupArmed = false;
+let staleFollowTimer = null;
 
 function setTab(tab) {
   document.querySelectorAll(".tab").forEach(b => {
@@ -471,9 +484,10 @@ function usMarketStatus(now = new Date()) {
 }
 function updateLiveDot() {
   const age = (Date.now() - LAST_SNAP_TS) / 1000;
-  const stale = !LAST_SNAP_TS || age > 30;
-  $("live-dot").classList.toggle("stale", stale);
-  $("live-dot").title = stale ? "Stale (>30s)" : "Live";
+  const stale = !LAST_LIVE || !LAST_SNAP_TS || age > STALE_AFTER_SEC;
+  const dot = $("live-dot");
+  dot.classList.toggle("stale", stale);
+  dot.title = !LAST_LIVE ? "Quotes updating" : (stale ? "Showing last update" : "Live");
 }
 setInterval(updateLiveDot, 2000);
 
@@ -808,6 +822,8 @@ function updateKpis() {
 }
 
 async function refreshPositions() {
+  if (posInFlight) return;
+  posInFlight = true;
   try {
     const res = await fetchWithTimeout("/api/positions?status=open", { cache: "no-store", credentials: "same-origin" }, 45000);
     if (res.status === 401) { location.href = "/login"; return; }
@@ -829,6 +845,8 @@ async function refreshPositions() {
     updateKpis();
   } catch (e) {
     $("pos-list").innerHTML = `<div class="card"><div class="err">${e.message}</div></div>`;
+  } finally {
+    posInFlight = false;
   }
 }
 
@@ -858,29 +876,97 @@ $("btnote-toggle").addEventListener("click", () => {
   $("btnote-toggle").textContent = $("btnote").classList.contains("expanded") ? "Hide standing rule" : "Show standing rule";
 });
 
-async function refresh() {
-  try {
-    if (($("meta").textContent || "").includes("Loading")) {
-      $("meta").textContent = "Fetching live quotes…";
+function armSteady() {
+  if (steadyTimer) clearInterval(steadyTimer);
+  steadyTimer = setInterval(() => refresh({ positions: true }), REFRESH_MS);
+}
+function stopCatchup() {
+  catchupArmed = false;
+  catchupLeft = 0;
+  if (catchupTimer) {
+    clearTimeout(catchupTimer);
+    catchupTimer = null;
+  }
+}
+function scheduleStaleFollowUp() {
+  // The 2-minute poll returns the previous snapshot and starts a refresh.
+  // One follow-up picks up that refresh; it does not become a fast poll.
+  if (staleFollowTimer) return;
+  staleFollowTimer = setTimeout(() => {
+    staleFollowTimer = null;
+    refresh({ positions: true, followUp: true });
+  }, 35000);
+}
+function scheduleCatchup() {
+  if (catchupTimer) return;
+  if (!catchupArmed) {
+    catchupArmed = true;
+    catchupLeft = 3;
+  }
+  if (catchupLeft <= 0) return;
+  const delay = [8000, 12000, 20000][3 - catchupLeft] || 20000;
+  catchupTimer = setTimeout(() => {
+    catchupTimer = null;
+    if (refreshInFlight) {
+      scheduleCatchup();
+      return;
     }
-    const res = await fetchWithTimeout("/api/snapshot", { cache: "no-store", credentials: "same-origin" }, 55000);
+    catchupLeft -= 1;
+    refresh({ positions: false });
+  }, delay);
+}
+function noteSnapshotFailure(e) {
+  const aborted = e && (e.name === "AbortError" || /abort/i.test(String(e.message || e)));
+  if (!LAST_DATA) {
+    $("meta").textContent = aborted ? "Snapshot timed out — retrying…" : ("Fetch failed: " + (e && e.message ? e.message : e));
+  } else {
+    $("meta").textContent = "Showing last update — refresh failed";
+  }
+  $("live-dot").classList.add("stale");
+  LAST_LIVE = false;
+  $("quote-warn").classList.add("show");
+  $("quote-warn").textContent = LAST_DATA
+    ? "Could not refresh. Signal cards stay on the last update."
+    : (aborted ? "Snapshot timed out. Retrying shortly." : "Network error loading signals. Retrying shortly.");
+  scheduleCatchup();
+}
+
+async function refresh(opts) {
+  const withPositions = !!(opts && opts.positions);
+  const isFollowUp = !!(opts && opts.followUp);
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  let followUp = false;
+  try {
+    if (!LAST_DATA) $("meta").textContent = "Loading signals…";
+    const res = await fetchWithTimeout("/api/snapshot", { cache: "no-store", credentials: "same-origin" }, 20000);
     if (res.status === 401) { location.href = "/login"; return; }
     const data = await res.json();
     if (!data.ok) {
-      $("meta").textContent = "Error: " + (data.error || res.status);
-      $("live-dot").classList.add("stale");
-      $("quote-warn").classList.add("show");
-      $("quote-warn").textContent = "Snapshot error: " + (data.error || res.status);
+      noteSnapshotFailure(new Error(data.error || String(res.status)));
       return;
     }
     LAST_DATA = data;
     LAST_SNAP_TS = Date.now();
+    const pending = !!data.quotesPending;
+    const live = data.quotesLive != null ? !!data.quotesLive : (!pending && data.spy && data.spy.price != null);
+    LAST_LIVE = !pending && live;
+    if (data.refreshSec && Number(data.refreshSec) >= 30) {
+      const next = Number(data.refreshSec) * 1000;
+      STALE_AFTER_SEC = Number(data.refreshSec) + 30;
+      if (next !== REFRESH_MS) {
+        REFRESH_MS = next;
+        armSteady();
+      }
+    }
     updateLiveDot();
     const mkt = usMarketStatus();
     const mktEl = $("mkt-pill");
     mktEl.textContent = mkt.label + (mkt.et ? " · " + mkt.et : "");
     mktEl.className = "pill " + (mkt.open ? "mkt-open" : "mkt-closed");
-    $("meta").textContent = `Updated ${data.updatedIST || "—"}`;
+    $("meta").textContent = pending
+      ? "Signals loaded · fetching quotes…"
+      : `Updated ${data.updatedIST || "—"}`;
     $("signals-asof").textContent = data.signalsAsOf ? ("· Signals " + data.signalsAsOf) : "";
     const btxt = (data.banner && data.banner.text) || "Size down";
     $("banner").innerHTML = `<span class="pill">SIZE DOWN</span> <span>${btxt}</span>`;
@@ -912,9 +998,11 @@ async function refresh() {
 
     const errs = data.errors || [];
     const staleAge = data.quotesStaleAgeSec;
-    const quoteBad = errs.length > 0 || spyPx == null || (staleAge != null && staleAge > 60);
-    $("quote-warn").classList.toggle("show", quoteBad);
-    if (quoteBad) {
+    const quoteBad = !pending && (errs.length > 0 || spyPx == null || (staleAge != null && staleAge > 60));
+    $("quote-warn").classList.toggle("show", pending || quoteBad);
+    if (pending) {
+      $("quote-warn").textContent = "Signal cards are ready. Live quotes are still loading.";
+    } else if (quoteBad) {
       if (spyPx != null && staleAge != null) {
         $("quote-warn").textContent = `Showing last-good quotes (~${Math.round(staleAge)}s old). Yahoo refresh limited.`;
       } else if (errs.length) {
@@ -926,23 +1014,32 @@ async function refresh() {
     $("errors").textContent = errs.length > 1 ? ("Also: " + errs.slice(1, 3).join(" · ")) : "";
     $("footer").textContent = (data.disclaimer || "Not financial advice.") + " Admin edits positions; guest read-only. No order placement.";
     updateKpis();
+    if (LAST_LIVE) stopCatchup();
+    else followUp = true;
+    const refreshSec = Number(data.refreshSec) || 120;
+    if (!isFollowUp && !pending && data.snapshotAgeSec != null && data.snapshotAgeSec >= refreshSec - 1) {
+      scheduleStaleFollowUp();
+    }
   } catch (e) {
-    const aborted = e && (e.name === "AbortError" || /abort/i.test(String(e.message || "")));
-    $("meta").textContent = aborted ? "Snapshot timed out — retrying…" : ("Fetch failed: " + e.message);
-    $("live-dot").classList.add("stale");
-    $("quote-warn").classList.add("show");
-    $("quote-warn").textContent = aborted
-      ? "Snapshot timed out (Yahoo slow). Will retry on next poll."
-      : "Network error refreshing snapshot.";
+    noteSnapshotFailure(e);
+  } finally {
+    refreshInFlight = false;
   }
+  if (followUp) scheduleCatchup();
+  if (withPositions) refreshPositions();
 }
 
 loadMe().then(() => { resetForm(); refreshPositions(); });
-refresh();
-setInterval(refresh, 5000);
-setInterval(() => {
-  if (document.querySelector('.tab[data-tab="positions"].active')) refreshPositions();
-}, 15000);
+refresh({ positions: false });
+armSteady();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  const age = Date.now() - LAST_SNAP_TS;
+  if (!LAST_SNAP_TS || age >= REFRESH_MS - 5000) refresh({ positions: true });
+});
+window.addEventListener("pageshow", (ev) => {
+  if (ev.persisted) refresh({ positions: true });
+});
 </script>
 </body>
 </html>
