@@ -6,6 +6,7 @@ as unknown (no badge). Badge only when today/entry <= earnings <= option expiry.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -108,7 +109,12 @@ def _pick_next_from_list(dates: list, as_of: date) -> Optional[date]:
     return future[0] if future else None
 
 
-def fetch_next_earnings(symbol: str, sess: Optional[requests.Session] = None, as_of: Optional[date] = None) -> Optional[date]:
+def fetch_next_earnings(
+    symbol: str,
+    sess: Optional[requests.Session] = None,
+    as_of: Optional[date] = None,
+    timeout: float = 15,
+) -> Optional[date]:
     s = sess or _session()
     sym = symbol.upper()
     ref = as_of or _today()
@@ -117,7 +123,7 @@ def fetch_next_earnings(symbol: str, sess: Optional[requests.Session] = None, as
         r = s.get(
             f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}",
             params={"modules": "calendarEvents"},
-            timeout=15,
+            timeout=timeout,
         )
         if r.ok:
             j = r.json()
@@ -138,7 +144,7 @@ def fetch_next_earnings(symbol: str, sess: Optional[requests.Session] = None, as
         r = s.get(
             "https://query1.finance.yahoo.com/v7/finance/quote",
             params={"symbols": sym},
-            timeout=15,
+            timeout=timeout,
         )
         if r.ok:
             results = ((r.json().get("quoteResponse") or {}).get("result")) or []
@@ -214,10 +220,10 @@ def next_earnings_for(
     return d
 
 
-def earnings_before_expiry(
+def _earnings_window(
     symbol: str,
     expiry: Optional[str],
-    sess=None,
+    d: Optional[date],
     as_of: Optional[date] = None,
     entry_date: Optional[str] = None,
 ) -> dict:
@@ -245,14 +251,142 @@ def earnings_before_expiry(
         except Exception:
             pass
 
-    d = next_earnings_for(symbol, sess=sess, as_of=ref)
-    if not d:
-        return out
-    # Defense in depth
-    if d < ref:
+    if not d or d < ref:
         return out
     out["nextEarnings"] = d.isoformat()
     if ref <= d <= exp:
         out["beforeExpiry"] = True
         out["badge"] = f"EARNINGS {d.isoformat()} before expiry"
     return out
+
+
+def earnings_before_expiry(
+    symbol: str,
+    expiry: Optional[str],
+    sess=None,
+    as_of: Optional[date] = None,
+    entry_date: Optional[str] = None,
+) -> dict:
+    """Badge only when next earnings is on/after as_of (today or entry) AND on/before expiry."""
+    ref = as_of or _today()
+    if entry_date:
+        try:
+            ed = date.fromisoformat(str(entry_date)[:10])
+            if ed > ref:
+                ref = ed
+        except Exception:
+            pass
+    d = next_earnings_for(symbol, sess=sess, as_of=ref)
+    return _earnings_window(symbol, expiry, d, as_of=as_of, entry_date=entry_date)
+
+
+_mem_lock = threading.Lock()
+_mem_cache: dict[str, dict] = {}
+_warm_lock = threading.Lock()
+_warming = False
+
+
+def _cache_fresh(rec: Optional[dict]) -> bool:
+    if not rec:
+        return False
+    try:
+        return (time.time() - float(rec.get("ts") or 0)) <= _MAX_AGE_H * 3600
+    except Exception:
+        return False
+
+
+def _cached_record(symbol: str) -> Optional[dict]:
+    sym = symbol.upper()
+    with _mem_lock:
+        rec = _mem_cache.get(sym)
+    if _cache_fresh(rec):
+        return rec
+    row = _load_file().get(sym)
+    if _cache_fresh(row):
+        with _mem_lock:
+            _mem_cache[sym] = row
+        return row
+    return None
+
+
+def _remember_earnings(symbol: str, d: Optional[date]) -> None:
+    rec = {"next_earnings": d.isoformat() if d else None, "ts": time.time()}
+    with _mem_lock:
+        _mem_cache[symbol.upper()] = rec
+    _file_put(symbol, d)
+
+
+def _cached_earnings_date(symbol: str, ref: date) -> Optional[date]:
+    rec = _cached_record(symbol)
+    if not rec:
+        return None
+    ne = rec.get("next_earnings")
+    if not ne:
+        return None
+    try:
+        return _future_only(date.fromisoformat(str(ne)[:10]), ref)
+    except Exception:
+        return None
+
+
+def cached_earnings_before_expiry(
+    symbol: str,
+    expiry: Optional[str],
+    as_of: Optional[date] = None,
+    entry_date: Optional[str] = None,
+) -> dict:
+    """Same badge rules as earnings_before_expiry, using only the in-process / file cache.
+
+    Snapshot rendering must not wait on Yahoo or Postgres for a badge.
+    """
+    ref = as_of or _today()
+    if entry_date:
+        try:
+            ed = date.fromisoformat(str(entry_date)[:10])
+            if ed > ref:
+                ref = ed
+        except Exception:
+            pass
+    return _earnings_window(symbol, expiry, _cached_earnings_date(symbol, ref), as_of=as_of, entry_date=entry_date)
+
+
+def _warm_symbols(symbols: list[str]) -> None:
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": UA})
+    ref = _today()
+    for sym in symbols:
+        try:
+            d = fetch_next_earnings(sym, sess=sess, as_of=ref, timeout=5)
+            _remember_earnings(sym, d)
+        except Exception:
+            continue
+
+
+def start_warm_earnings(symbols: list[str]) -> None:
+    """Fill the earnings cache off the request path. One warmer at a time."""
+    global _warming
+    need: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        sym = str(raw or "").upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        if _cached_record(sym) is None:
+            need.append(sym)
+    if not need:
+        return
+    with _warm_lock:
+        if _warming:
+            return
+        _warming = True
+
+    def run() -> None:
+        global _warming
+        try:
+            _warm_symbols(need)
+        finally:
+            with _warm_lock:
+                _warming = False
+
+    threading.Thread(target=run, name="earnings-warm", daemon=True).start()

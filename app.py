@@ -9,7 +9,7 @@ import os
 import secrets
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Any, Optional
@@ -27,7 +27,10 @@ UA = (
 )
 IST = ZoneInfo("Asia/Calcutta")
 ET = ZoneInfo("America/New_York")
-CACHE_TTL = 15.0
+# How often a fresh Yahoo pass is started. The HTTP handler never waits for it.
+SNAPSHOT_REFRESH_SEC = 120.0
+QUOTE_BUDGET_SEC = 12.0
+CHAIN_BUDGET_SEC = 15.0
 R_RATE = 0.05
 
 # Signals as of Fri 2026-10-30 close — structures from Sep14–Oct30 options backtest
@@ -138,13 +141,13 @@ class YahooClient:
             "https://fc.yahoo.com",
         ):
             try:
-                self._session.get(url, timeout=12)
+                self._session.get(url, timeout=4)
             except Exception:
                 pass
         last_err: Optional[Exception] = None
         for host in self._hosts:
             try:
-                r = self._session.get(f"{host}/v1/test/getcrumb", timeout=12)
+                r = self._session.get(f"{host}/v1/test/getcrumb", timeout=4)
                 if r.status_code == 429:
                     self._mark_backoff(25.0)
                     last_err = RuntimeError("crumb 429")
@@ -165,12 +168,12 @@ class YahooClient:
 
     def ensure_auth(self) -> str:
         with self._lock:
-            # Refresh if missing/expired; allow refresh even during backoff at most every 20s
+            # Refresh if missing/expired. At most one crumb dance per 12s so parallel
+            # chain fetches cannot each block on a full Yahoo login.
             need = (not self._crumb) or ((time.time() - self._crumb_ts) > 2 * 3600)
             if need:
-                # throttle refresh attempts while rate-limited
                 last_try = getattr(self, "_crumb_try_ts", 0.0)
-                if (time.time() - last_try) >= 20.0 or not self._in_backoff():
+                if (time.time() - last_try) >= 12.0:
                     self._crumb_try_ts = time.time()
                     try:
                         self._refresh_auth()
@@ -178,11 +181,19 @@ class YahooClient:
                         pass
             return self._crumb or ""
 
-    def _get_json(self, path: str, params: Optional[dict] = None, need_crumb: bool = True) -> Any:
+    def _get_json(
+        self,
+        path: str,
+        params: Optional[dict] = None,
+        need_crumb: bool = True,
+        timeout: float = 18,
+        attempts: int = 4,
+    ) -> Any:
         """GET path on rotating hosts; refresh crumb on 401."""
         params = dict(params or {})
         last_status = None
-        for attempt in range(4):
+        tries = max(1, int(attempts))
+        for attempt in range(tries):
             if need_crumb:
                 crumb = self.ensure_auth()
                 if crumb:
@@ -192,21 +203,21 @@ class YahooClient:
                     params.pop("crumb", None)
             host = self._hosts[(self._host_i + attempt) % len(self._hosts)]
             url = f"{host}{path}"
-            r = self._session.get(url, params=params, timeout=18)
+            r = self._session.get(url, params=params, timeout=timeout)
             last_status = r.status_code
             if r.status_code == 429:
                 with self._lock:
                     self._mark_backoff(60.0)
-                time.sleep(0.4 * (attempt + 1))
+                time.sleep(0.25 * (attempt + 1))
                 continue
             if r.status_code == 401:
                 with self._lock:
                     self._crumb = None
-                    try:
-                        self._refresh_auth()
-                    except Exception:
-                        pass
-                time.sleep(0.25 * (attempt + 1))
+                    # Allow a single re-auth after a rejected crumb, then the 12s throttle holds.
+                    if time.time() - getattr(self, "_crumb_401_ts", 0.0) > 12.0:
+                        self._crumb_try_ts = 0.0
+                        self._crumb_401_ts = time.time()
+                time.sleep(0.15 * (attempt + 1))
                 continue
             r.raise_for_status()
             return r.json()
@@ -241,7 +252,7 @@ class YahooClient:
         except Exception:
             return None
 
-    def _chart_one(self, symbol: str) -> Optional[dict]:
+    def _chart_one(self, symbol: str, timeout: float = 15) -> Optional[dict]:
         sym = symbol.upper()
         last_err = None
         for host in self._hosts:
@@ -249,7 +260,7 @@ class YahooClient:
                 r = self._session.get(
                     f"{host}/v8/finance/chart/{sym}",
                     params={"interval": "1m", "range": "1d"},
-                    timeout=15,
+                    timeout=timeout,
                 )
                 if r.status_code == 429:
                     with self._lock:
@@ -268,7 +279,21 @@ class YahooClient:
             pass
         return None
 
-    def quotes(self, symbols: list[str]) -> dict[str, dict]:
+    def cached_quotes(self, symbols: list[str]) -> dict[str, dict]:
+        """Last successful quotes, with no network."""
+        syms = [s.upper() for s in symbols]
+        with self._lock:
+            cached = dict(self._quote_cache.get("data") or {})
+            last = dict(self._last_good_quotes)
+        out: dict[str, dict] = {}
+        for s in syms:
+            if s in cached:
+                out[s] = cached[s]
+            elif s in last:
+                out[s] = last[s]
+        return out
+
+    def quotes(self, symbols: list[str], budget_sec: Optional[float] = None) -> dict[str, dict]:
         if not symbols:
             return {}
         syms = [s.upper() for s in symbols]
@@ -281,10 +306,19 @@ class YahooClient:
                     return {s: cached[s] for s in syms}
 
         out: dict[str, dict] = {}
-        # Prefer crumb-less v8 chart (reliable on Render when v7/quote is 401)
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {ex.submit(self._chart_one, s): s for s in syms}
-            for fut in as_completed(futs):
+        # Prefer crumb-less v8 chart (reliable on Render when v7/quote is 401).
+        # A budget stops the snapshot from waiting on the slowest host.
+        chart_timeout = 6.0 if budget_sec is not None else 15.0
+        ex = ThreadPoolExecutor(max_workers=8)
+        try:
+            futs = {ex.submit(self._chart_one, s, chart_timeout): s for s in syms}
+            if budget_sec is None:
+                done = set(futs)
+            else:
+                done, pending = wait(set(futs), timeout=max(0.5, float(budget_sec)))
+                for fut in pending:
+                    fut.cancel()
+            for fut in done:
                 s = futs[fut]
                 try:
                     q = fut.result()
@@ -292,10 +326,13 @@ class YahooClient:
                     q = None
                 if q:
                     out[s] = q
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
 
-        # Optional enrichment via v7 if crumb works (ignore failures)
+        # Optional enrichment via v7 if crumb works (ignore failures).
+        # Skip it on a budgeted snapshot — v8 plus last-good is enough to paint.
         missing = [s for s in syms if s not in out]
-        if missing and not self._in_backoff():
+        if missing and budget_sec is None and not self._in_backoff():
             try:
                 data = self._get_json(
                     "/v7/finance/quote",
@@ -331,15 +368,13 @@ class YahooClient:
             merged = dict(self._quote_cache.get("data") or {})
             merged.update(out)
             self._quote_cache = {"ts": time.time(), "data": merged}
-            self._quotes_stale_age = max(stale_ages) if stale_ages and len(out) == len(stale_ages) else (
-                max(stale_ages) if stale_ages else None
-            )
+            self._quotes_stale_age = max(stale_ages) if stale_ages else None
         return out
 
     def quotes_stale_age(self) -> Optional[float]:
         return self._quotes_stale_age
 
-    def options_chain(self, symbol: str, expiry_unix: int) -> dict:
+    def options_chain(self, symbol: str, expiry_unix: int, timeout: float = 18, attempts: int = 4) -> dict:
         key = (symbol.upper(), int(expiry_unix))
         now = time.time()
         with self._lock:
@@ -351,27 +386,40 @@ class YahooClient:
                 f"/v7/finance/options/{symbol.upper()}",
                 {"date": int(expiry_unix)},
                 need_crumb=True,
+                timeout=timeout,
+                attempts=attempts,
             )
         except Exception:
             with self._lock:
                 if key in self._last_good_chains:
                     return self._last_good_chains[key]
             raise
+        try:
+            _quote, calls, puts = chain_legs(data)
+        except Exception:
+            _quote, calls, puts = None, [], []
         with self._lock:
-            self._chain_cache[key] = data
-            self._chain_cache_ts[key] = time.time()
-            self._last_good_chains[key] = data
-            if len(self._chain_cache) > 80:
-                oldest = sorted(self._chain_cache_ts.items(), key=lambda kv: kv[1])[:20]
-                for k, _ in oldest:
-                    self._chain_cache.pop(k, None)
-                    self._chain_cache_ts.pop(k, None)
+            # An empty 200 must not wipe the last chain that actually had legs.
+            if calls or puts:
+                self._chain_cache[key] = data
+                self._chain_cache_ts[key] = time.time()
+                self._last_good_chains[key] = data
+                if len(self._chain_cache) > 80:
+                    oldest = sorted(self._chain_cache_ts.items(), key=lambda kv: kv[1])[:20]
+                    for k, _ in oldest:
+                        self._chain_cache.pop(k, None)
+                        self._chain_cache_ts.pop(k, None)
+                return data
+            if key in self._last_good_chains:
+                return self._last_good_chains[key]
         return data
 
 
 yahoo = YahooClient()
 _cache_lock = threading.Lock()
-_cache: dict[str, Any] = {"ts": 0.0, "data": None}
+_cache: dict[str, Any] = {"ts": 0.0, "data": None, "live": False}
+_refresh_lock = threading.Lock()
+_refreshing = False
 
 
 def expiry_unix(expiry_str: str) -> int:
@@ -657,42 +705,66 @@ def enrich_early(early: dict, quotes: dict, chains: dict) -> list:
 
 
 
-def build_snapshot() -> dict:
-    opt_jobs: dict[tuple[str, str], None] = {}
-    for p in WEEKLY_BULLISH + REVERSAL_BEARISH:
-        opt_jobs[(p["symbol"], p["expiry"])] = None
-
+def _quote_symbols() -> list[str]:
     watch_syms = [w["symbol"] for w in WATCHLIST]
-    all_quote_syms = sorted(
-        set([p["symbol"] for p in WEEKLY_BULLISH + REVERSAL_BEARISH] + watch_syms + ["SPY"])
-    )
+    return sorted(set([p["symbol"] for p in WEEKLY_BULLISH + REVERSAL_BEARISH] + watch_syms + ["SPY"]))
 
-    errors: list[str] = []
-    try:
-        quotes = yahoo.quotes(all_quote_syms)
-    except Exception as e:  # noqa: BLE001
-        errors.append(f"quotes: {e}")
-        quotes = {}
 
+def _option_jobs() -> list[tuple[str, str]]:
+    jobs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for p in WEEKLY_BULLISH + REVERSAL_BEARISH:
+        key = (p["symbol"], p["expiry"])
+        if key not in seen:
+            seen.add(key)
+            jobs.append(key)
+    return jobs
+
+
+def _fetch_chains(jobs: list[tuple[str, str]], budget_sec: float) -> tuple[dict, list[str]]:
+    """Fetch as many option chains as fit in the budget. Stragglers are left behind."""
     chains: dict[tuple[str, str], tuple] = {}
-    for i, (sym, exp) in enumerate(opt_jobs):
-        try:
-            if i:
-                time.sleep(0.12)  # avoid Yahoo options 401 bursts on Render
-            raw = yahoo.options_chain(sym, expiry_unix(exp))
-            chains[(sym, exp)] = chain_legs(raw)
-            # If empty legs, retry once after crumb refresh
-            _q, _c, _p = chains[(sym, exp)]
-            if not _c and not _p:
-                time.sleep(0.2)
-                with yahoo._lock:
-                    yahoo._crumb = None
-                raw = yahoo.options_chain(sym, expiry_unix(exp))
-                chains[(sym, exp)] = chain_legs(raw)
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"{sym} {exp}: {e}")
-            chains[(sym, exp)] = (quotes.get(sym), [], [])
+    errors: list[str] = []
+    if not jobs:
+        return chains, errors
 
+    def work(sym: str, exp: str):
+        try:
+            raw = yahoo.options_chain(sym, expiry_unix(exp), timeout=6, attempts=1)
+            return sym, exp, chain_legs(raw), None
+        except Exception as e:  # noqa: BLE001
+            return sym, exp, None, f"{sym} {exp}: {e}"
+
+    ex = ThreadPoolExecutor(max_workers=3)
+    try:
+        futs = {ex.submit(work, sym, exp): (sym, exp) for sym, exp in jobs}
+        done, pending = wait(set(futs), timeout=max(0.5, budget_sec))
+        for fut in pending:
+            fut.cancel()
+        for fut in done:
+            try:
+                sym, exp, legs, err = fut.result()
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"chain: {e.__class__.__name__}")
+                continue
+            if err:
+                errors.append(err)
+            if legs is not None:
+                chains[(sym, exp)] = legs
+        if pending:
+            errors.append(f"option chains: {len(pending)} still loading")
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+    return chains, errors
+
+
+def _assemble_snapshot(
+    quotes: dict,
+    chains: dict,
+    errors: list[str],
+    *,
+    quotes_pending: bool,
+) -> dict:
     weekly = []
     for p in WEEKLY_BULLISH:
         q, calls, puts = chains.get((p["symbol"], p["expiry"]), (quotes.get(p["symbol"]), [], []))
@@ -727,9 +799,10 @@ def build_snapshot() -> dict:
     spy_q = quotes.get("SPY") or {}
     now = datetime.now(timezone.utc)
 
-    # Earnings badges + exit-alert badges on signal / early cards
+    # Earnings badges come from the local cache only. A network lookup here
+    # used to hold the whole snapshot (and the tablet UI) hostage.
     try:
-        from earnings import earnings_before_expiry
+        from earnings import cached_earnings_before_expiry as earnings_before_expiry
     except Exception:
         earnings_before_expiry = None  # type: ignore
     exit_state = load_exit_state()
@@ -805,10 +878,111 @@ def build_snapshot() -> dict:
             "Not financial advice. Yahoo option quotes may be ~15 min delayed "
             "intraday and are Friday-close over the weekend. No order placement."
         ),
-        "errors": errors,
-        "quotesSource": "v8_chart",
-        "quotesStaleAgeSec": yahoo.quotes_stale_age(),
+        "errors": errors[:8],
+        "quotesSource": "signals" if quotes_pending else "v8_chart",
+        "quotesStaleAgeSec": None if quotes_pending else yahoo.quotes_stale_age(),
+        "quotesPending": quotes_pending,
+        "quotesLive": (not quotes_pending) and _quotes_have_prices(quotes),
+        "refreshSec": SNAPSHOT_REFRESH_SEC,
     }
+
+
+def _quotes_have_prices(quotes: dict) -> bool:
+    for q in quotes.values():
+        if underlying_price(q or {}) is not None:
+            return True
+    return False
+
+
+def build_shell_snapshot() -> dict:
+    """Signal cards from the saved plans, with no Yahoo calls."""
+    return _assemble_snapshot({}, {}, [], quotes_pending=True)
+
+
+def build_snapshot(publish=None) -> dict:
+    """Quote + chain enrichment. `publish` may be called with a partial result.
+
+    Prices are published before option chains so a slow chain does not hide quotes.
+    """
+    symbols = _quote_symbols()
+    try:
+        from earnings import start_warm_earnings
+
+        start_warm_earnings(symbols)
+    except Exception:
+        pass
+
+    errors: list[str] = []
+    try:
+        quotes = yahoo.quotes(symbols, budget_sec=QUOTE_BUDGET_SEC)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"quotes: {e.__class__.__name__}")
+        quotes = yahoo.cached_quotes(symbols)
+
+    partial = _assemble_snapshot(quotes, {}, list(errors), quotes_pending=False)
+    if publish:
+        publish(partial)
+
+    chains, chain_errors = _fetch_chains(_option_jobs(), CHAIN_BUDGET_SEC)
+    errors.extend(chain_errors)
+    full = _assemble_snapshot(quotes, chains, errors, quotes_pending=False)
+    if publish:
+        publish(full)
+    return full
+
+
+def _store_snapshot(data: dict, *, live: bool) -> None:
+    with _cache_lock:
+        _cache["data"] = data
+        _cache["ts"] = time.time()
+        _cache["live"] = live
+
+
+def _safe_err(exc: BaseException) -> str:
+    text = str(exc)
+    if "://" in text or "password" in text.lower() or "secret" in text.lower():
+        return exc.__class__.__name__
+    return text[:180]
+
+
+def _kick_refresh() -> None:
+    """Single-flight background refresh. Never run this on the request thread."""
+    global _refreshing
+    with _refresh_lock:
+        if _refreshing:
+            return
+        _refreshing = True
+
+    def run() -> None:
+        global _refreshing
+        t0 = time.time()
+        try:
+            data = build_snapshot(publish=lambda payload: _store_snapshot(payload, live=True))
+            _store_snapshot(data, live=True)
+            print(
+                f"[snapshot] refresh {time.time() - t0:.1f}s "
+                f"errors={len(data.get('errors') or [])} live={bool(data.get('quotesLive'))}"
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[snapshot] refresh failed: {_safe_err(e)}")
+            with _cache_lock:
+                prev = _cache.get("data")
+                was_live = bool(_cache.get("live"))
+            if prev:
+                stamped = dict(prev)
+                errs = [x for x in (stamped.get("errors") or []) if not str(x).startswith("refresh:")]
+                errs.append(f"refresh: {_safe_err(e)}")
+                stamped["errors"] = errs[:8]
+                _store_snapshot(stamped, live=was_live)
+            else:
+                shell = build_shell_snapshot()
+                shell["errors"] = [f"refresh: {_safe_err(e)}"]
+                _store_snapshot(shell, live=False)
+        finally:
+            with _refresh_lock:
+                _refreshing = False
+
+    threading.Thread(target=run, name="snapshot-refresh", daemon=True).start()
 
 
 
@@ -928,7 +1102,7 @@ def health():
 def login_page(request: Request):
     if _session_user(request):
         return RedirectResponse(url="/", status_code=303)
-    return FileResponse(STATIC / "login.html")
+    return FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/login")
@@ -1003,27 +1177,42 @@ def me(request: Request):
 
 @app.get("/api/snapshot")
 def snapshot(request: Request):
-    # Auth enforced by middleware; keep view-only for all roles
+    # Auth enforced by middleware; keep view-only for all roles.
+    # Always answer immediately. Yahoo work runs on a background thread and the
+    # next poll (or the in-flight refresh) picks up prices. A slow chain must
+    # not leave the tablet on "Connecting…".
     now = time.time()
     with _cache_lock:
-        if _cache["data"] is not None and (now - _cache["ts"]) < CACHE_TTL:
-            return JSONResponse(_cache["data"])
-    try:
-        data = build_snapshot()
-    except Exception as e:  # noqa: BLE001
-        return JSONResponse(
-            {"ok": False, "error": str(e), "updatedAt": datetime.now(timezone.utc).isoformat()},
-            status_code=502,
-        )
-    with _cache_lock:
-        _cache["ts"] = time.time()
-        _cache["data"] = data
-    return JSONResponse(data)
+        data = _cache.get("data")
+        ts = float(_cache.get("ts") or 0)
+        live = bool(_cache.get("live"))
+    if data is None:
+        data = build_shell_snapshot()
+        with _cache_lock:
+            if _cache.get("data") is None:
+                _cache["data"] = data
+                _cache["ts"] = time.time()
+                _cache["live"] = False
+                ts = float(_cache["ts"])
+                live = False
+            else:
+                data = _cache["data"]
+                ts = float(_cache.get("ts") or 0)
+                live = bool(_cache.get("live"))
+    age = (now - ts) if ts else None
+    if (not live) or age is None or age >= SNAPSHOT_REFRESH_SEC:
+        _kick_refresh()
+    payload = dict(data)
+    if live and ts:
+        payload["snapshotAgeSec"] = round(max(0.0, time.time() - ts), 1)
+    payload["refreshSec"] = SNAPSHOT_REFRESH_SEC
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    # Mobile Safari will keep a cached index.html (and the old 5s poll) unless told not to.
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
 
 
 # Do not mount /static publicly — login.html & index.html are served via routes.
@@ -1099,6 +1288,8 @@ def _startup_db():
             print(f"[startup] db schema skip: {e}")
     # Neon can be unreachable from some networks — never block boot
     threading.Thread(target=_run, daemon=True).start()
+    # Warm quotes in the background so the first paint can upgrade quickly.
+    _kick_refresh()
 
 
 @app.get("/api/positions/defaults")
