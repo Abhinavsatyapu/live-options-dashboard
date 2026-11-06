@@ -1,5 +1,5 @@
 {
-  "asof": "2026-11-06T21:49:08",
+  "asof": "2026-11-06T22:12:49",
   "standing_rule": "Bullish only from Weekly; bearish only from Reversals; never Weekly BEARISH.",
   "sure_shots": [
     {
@@ -33,7 +33,7 @@
       "size": "manage",
       "why": "ABSORBED event lean None D+1 None",
       "days_early": "1 vs D+2",
-      "star": true
+      "star": false
     },
     {
       "side": "bearish",
@@ -41,16 +41,16 @@
       "source": "reversals",
       "sym": "TEAM",
       "session": "2026-11-06",
-      "setup": "ABSORBED CALLS ARMED",
+      "setup": "ABSORBED CALLS IN",
       "confidence": 0.82,
       "entry": "D+1 close or D+2 break of D+1 low",
-      "trigger": null,
-      "stop": null,
+      "trigger": 158.99,
+      "stop": 165.32,
       "structure": "atm_put",
-      "size": "FULL",
+      "size": "manage",
       "why": "ABSORBED event lean None D+1 None",
       "days_early": "1 vs D+2",
-      "star": true
+      "star": false
     },
     {
       "side": "bearish",
@@ -69,10 +69,106 @@
       "days_early": "1 if entering D+1 close vs D+2"
     }
   ],
-  "forming_watch": [],
+  "forming_watch": [
+    {
+      "side": "bullish",
+      "tier": "A",
+      "source": "weekly",
+      "sym": "JPM",
+      "week": "2026-11-02",
+      "label": "\u2014",
+      "setup": "FORMING \u2605-path (Thu)",
+      "confidence": 0.45,
+      "entry": "DO NOT enter yet \u2014 wait Friday wall_up\u22652 + official BULLISH/\u2605 or SQ+VC3 \u2605",
+      "stop": "n/a (watch)",
+      "structure": "none_until_confirm",
+      "why": "Thu-path: cum=4.1 calls=2 under 20<50 & 50>200 \u2014 LOO next_up only ~44%",
+      "days_early": "1 (prep only)",
+      "regime": "20<50 \u00b7 50>200",
+      "close": "337.34",
+      "lean_partial": 4.1,
+      "call_days_partial": 2
+    },
+    {
+      "side": "bullish",
+      "tier": "A",
+      "source": "weekly",
+      "sym": "NET",
+      "week": "2026-11-02",
+      "label": "\u2014",
+      "setup": "FORMING \u2605-path (Thu)",
+      "confidence": 0.45,
+      "entry": "DO NOT enter yet \u2014 wait Friday wall_up\u22652 + official BULLISH/\u2605 or SQ+VC3 \u2605",
+      "stop": "n/a (watch)",
+      "structure": "none_until_confirm",
+      "why": "Thu-path: cum=2.9 calls=3 under 20<50 & 50>200 \u2014 LOO next_up only ~44%",
+      "days_early": "1 (prep only)",
+      "regime": "20<50 \u00b7 50>200",
+      "close": "244.51",
+      "lean_partial": 2.9,
+      "call_days_partial": 3
+    },
+    {
+      "side": "bullish",
+      "tier": "A",
+      "source": "weekly",
+      "sym": "NOW",
+      "week": "2026-11-02",
+      "label": "\u2014",
+      "setup": "FORMING \u2605-path (Thu)",
+      "confidence": 0.45,
+      "entry": "DO NOT enter yet \u2014 wait Friday wall_up\u22652 + official BULLISH/\u2605 or SQ+VC3 \u2605",
+      "stop": "n/a (watch)",
+      "structure": "none_until_confirm",
+      "why": "Thu-path: cum=2.5 calls=3 under 20<50 & 50>200 \u2014 LOO next_up only ~44%",
+      "days_early": "1 (prep only)",
+      "regime": "20<50 \u00b7 50>200",
+      "close": "102.36",
+      "lean_partial": 2.5,
+      "call_days_partial": 3
+    },
+    {
+      "side": "bullish",
+      "tier": "A",
+      "source": "weekly",
+      "sym": "PANW",
+      "week": "2026-11-02",
+      "label": "\u2014",
+      "setup": "FORMING \u2605-path (Thu)",
+      "confidence": 0.45,
+      "entry": "DO NOT enter yet \u2014 wait Friday wall_up\u22652 + official BULLISH/\u2605 or SQ+VC3 \u2605",
+      "stop": "n/a (watch)",
+      "structure": "none_until_confirm",
+      "why": "Thu-path: cum=4.8 calls=4 under 20<50 & 50>200 \u2014 LOO next_up only ~44%",
+      "days_early": "1 (prep only)",
+      "regime": "20<50 \u00b7 50>200",
+      "close": "314.67",
+      "lean_partial": 4.8,
+      "call_days_partial": 4
+    },
+    {
+      "side": "bullish",
+      "tier": "A",
+      "source": "weekly",
+      "sym": "TER",
+      "week": "2026-11-02",
+      "label": "\u2014",
+      "setup": "FORMING \u2605-path (Thu)",
+      "confidence": 0.45,
+      "entry": "DO NOT enter yet \u2014 wait Friday wall_up\u22652 + official BULLISH/\u2605 or SQ+VC3 \u2605",
+      "stop": "n/a (watch)",
+      "structure": "none_until_confirm",
+      "why": "Thu-path: cum=46.1 calls=2 under 20<50 & 50>200 \u2014 LOO next_up only ~44%",
+      "days_early": "1 (prep only)",
+      "regime": "20<50 \u00b7 50>200",
+      "close": "212.74",
+      "lean_partial": 46.1,
+      "call_days_partial": 2
+    }
+  ],
   "counts": {
     "sure": 4,
-    "forming": 0
+    "forming": 5
   },
   "rules": {
     "standing_rule": "Bullish only from Weekly; bearish only from Reversals; never Weekly BEARISH.",
