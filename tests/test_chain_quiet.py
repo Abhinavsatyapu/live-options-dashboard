@@ -38,27 +38,24 @@ class OptionJobTests(unittest.TestCase):
         today = date(2026, 11, 1)
         jobs = set(appmod._option_jobs(today))
         self.assertEqual(jobs, _expected_jobs(today))
-        self.assertNotIn(("ABT", "2026-11-06"), jobs)
-        self.assertNotIn(("SPY", "2026-11-06"), jobs)
-        self.assertNotIn(("WDAY", "2026-11-06"), jobs)
-        self.assertNotIn(("RBLX", "2026-11-06"), jobs)
-        # Non-skip chains are still requested, including both COHR expiries.
-        self.assertIn(("COHR", "2026-11-06"), jobs)
-        self.assertIn(("COHR", "2026-11-13"), jobs)
-        self.assertIn(("WDC", "2026-11-06"), jobs)
-        self.assertIn(("PURR", "2026-11-13"), jobs)
+        self.assertNotIn(("ENPH", "2026-11-13"), jobs)
+        self.assertNotIn(("COIN", "2026-11-13"), jobs)
+        self.assertNotIn(("GOOG", "2026-11-13"), jobs)
+        self.assertNotIn(("WDC", "2026-11-06"), jobs)
+        self.assertIn(("CRDO", "2026-11-13"), jobs)
+        self.assertIn(("CEG", "2026-11-13"), jobs)
 
     def test_today_and_past_expiries_are_not_fetched(self):
         today = date(2026, 11, 6)
         jobs = set(appmod._option_jobs(today))
         self.assertEqual(jobs, _expected_jobs(today))
-        # COHR's Nov 6 squeeze is done; the Nov 13 reversal put stays.
-        self.assertNotIn(("COHR", "2026-11-06"), jobs)
-        self.assertIn(("COHR", "2026-11-13"), jobs)
-        self.assertIn(("SMR", "2026-11-13"), jobs)
-        self.assertNotIn(("ABT", "2026-11-06"), jobs)
-        self.assertNotIn(("SPY", "2026-11-06"), jobs)
+        # Expired / skip Nov 6 rows stay out. Live Nov 13 reversals stay in.
         self.assertNotIn(("WDC", "2026-11-06"), jobs)
+        self.assertNotIn(("CEG", "2026-11-06"), jobs)
+        self.assertIn(("CRDO", "2026-11-13"), jobs)
+        self.assertIn(("TER", "2026-11-13"), jobs)
+        self.assertIn(("TEAM", "2026-11-13"), jobs)
+        self.assertNotIn(("COIN", "2026-11-13"), jobs)
 
     def test_chain_401_stays_off_the_payload_and_cards_still_return(self):
         calls = []
@@ -123,10 +120,11 @@ class OptionJobTests(unittest.TestCase):
         self.assertEqual(data["spy"]["price"], 25.0)
         self.assertGreater(len(data["weeklyBullish"]), 0)
         self.assertGreater(len(data["reversalBearish"]), 0)
-        self.assertEqual(data["signalsAsOf"], "2026-10-30 close")
-        self.assertNotIn("ABT", calls)
-        self.assertNotIn("SPY", calls)
-        self.assertIn("COHR", calls)
+        self.assertEqual(data["signalsAsOf"], "2026-11-06 intraday (Reversals live; Weekly 2026-11-02 wtd provisional)")
+        self.assertNotIn("COIN", calls)
+        self.assertNotIn("GOOG", calls)
+        self.assertIn("CRDO", calls)
+        self.assertIn("AFRM", calls)
 
     def test_last_good_chain_is_kept_when_yahoo_options_401s(self):
         yahoo = appmod.yahoo

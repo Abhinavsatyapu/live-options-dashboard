@@ -93,8 +93,8 @@ class IntradayRuleTests(unittest.TestCase):
         self.assertEqual(doc["prints"], [])
         self.assertIsNone(doc.get("signalsAsOf"))
         weekly = {row["symbol"] for row in REVERSAL_BEARISH}
-        self.assertIn("SMR", weekly)
-        self.assertIn("TER", {row["symbol"] for row in appmod.WATCHLIST})
+        self.assertIn("CRDO", weekly)
+        self.assertIn("TER", weekly)
         banned = weekly | {"CRDO", "TER"}
         self.assertTrue(banned.isdisjoint({row.get("ticker") for row in doc["prints"]}))
 
@@ -146,11 +146,12 @@ class IntradayRuleTests(unittest.TestCase):
         self.assertTrue(by_last["triggered"])
 
         waiting = apply_levels(
-            base, last=29.2, change_pct=None, today_high=29.8, today_low=28.4,
+            base, last=28.8, change_pct=None, today_high=29.2, today_low=28.4,
             prev_high=30.5, prev_low=28.0, prev_date="2026-11-05",
         )
         self.assertFalse(waiting["triggered"])
         self.assertFalse(waiting["stopSideTraded"])
+        self.assertFalse(waiting["approaching"])
         self.assertEqual(waiting["status"], "WAITING")
         self.assertEqual(waiting["entry"], 30.5)
         self.assertEqual(waiting["stop"], 28.0)
@@ -162,6 +163,7 @@ class IntradayRuleTests(unittest.TestCase):
         self.assertFalse(stopped["triggered"])
         self.assertTrue(stopped["stopSideTraded"])
         self.assertEqual(stopped["status"], "STOP_SIDE")
+        self.assertFalse(stopped["approaching"])
         self.assertIn("under the previous-day low", stopped["statusNote"])
 
         pending = apply_levels(
@@ -192,9 +194,107 @@ class IntradayRuleTests(unittest.TestCase):
         self.assertFalse(above["triggered"])
         self.assertTrue(above["stopSideTraded"])
         self.assertEqual(above["status"], "STOP_SIDE")
+        self.assertFalse(above["approaching"])
         self.assertIn("above the previous-day high", above["statusNote"])
         self.assertEqual(above["entry"], 9.0)
         self.assertEqual(above["stop"], 11.0)
+
+    def test_dollar_band_approaching_long_and_short(self):
+        long_base = {"symbol": "ENPH", "side": "long", "family": "IGN BOOK", "type": "IGN-B"}
+        near = apply_levels(
+            long_base, last=31.90, change_pct=None, today_high=31.95, today_low=31.40,
+            prev_high=32.30, prev_low=27.87, prev_date="2026-11-05",
+        )
+        self.assertEqual(near["status"], "APPROACHING")
+        self.assertTrue(near["approaching"])
+        self.assertFalse(near["triggered"])
+        self.assertFalse(near["stopSideTraded"])
+        self.assertEqual(near["distanceToEntry"], 0.35)
+        self.assertIn("Within $1 of yesterday's high — take long entry", near["statusNote"])
+        self.assertIn("$0.35 left", near["statusNote"])
+
+        exact = apply_levels(
+            long_base, last=31.30, change_pct=None, today_high=31.30, today_low=30.80,
+            prev_high=32.30, prev_low=27.87, prev_date="2026-11-05",
+        )
+        self.assertEqual(exact["status"], "APPROACHING")
+        self.assertEqual(exact["distanceToEntry"], 1.00)
+
+        outside = apply_levels(
+            long_base, last=31.29, change_pct=None, today_high=31.29, today_low=30.50,
+            prev_high=32.30, prev_low=27.87, prev_date="2026-11-05",
+        )
+        self.assertEqual(outside["status"], "WAITING")
+        self.assertFalse(outside["approaching"])
+
+        by_high = apply_levels(
+            long_base, last=30.00, change_pct=None, today_high=31.80, today_low=29.90,
+            prev_high=32.30, prev_low=27.87, prev_date="2026-11-05",
+        )
+        self.assertEqual(by_high["status"], "APPROACHING")
+        self.assertEqual(by_high["distanceToEntry"], 0.50)
+
+        crossed = apply_levels(
+            long_base, last=32.10, change_pct=None, today_high=32.40, today_low=31.70,
+            prev_high=32.30, prev_low=27.87, prev_date="2026-11-05",
+        )
+        self.assertEqual(crossed["status"], "TRIGGERED")
+        self.assertTrue(crossed["triggered"])
+        self.assertFalse(crossed["approaching"])
+
+        # Today's high is inside $1 of the high, but the low already traded the stop.
+        stopped_near = apply_levels(
+            long_base, last=27.40, change_pct=None, today_high=31.60, today_low=27.20,
+            prev_high=32.30, prev_low=27.87, prev_date="2026-11-05",
+        )
+        self.assertEqual(stopped_near["status"], "STOP_SIDE")
+        self.assertFalse(stopped_near["approaching"])
+
+        short_base = {"symbol": "PYPL", "side": "short", "family": "FLOW STATE", "type": "CONTINUATION"}
+        short_near = apply_levels(
+            short_base, last=58.70, change_pct=None, today_high=59.10, today_low=58.55,
+            prev_high=60.78, prev_low=58.32, prev_date="2026-11-05",
+        )
+        self.assertEqual(short_near["status"], "APPROACHING")
+        self.assertTrue(short_near["approaching"])
+        self.assertFalse(short_near["triggered"])
+        self.assertEqual(short_near["distanceToEntry"], 0.23)
+        self.assertIn("Within $1 of yesterday's low — take short entry", short_near["statusNote"])
+        self.assertIn("$0.23 left", short_near["statusNote"])
+
+        short_far = apply_levels(
+            short_base, last=59.40, change_pct=None, today_high=59.80, today_low=59.33,
+            prev_high=60.78, prev_low=58.32, prev_date="2026-11-05",
+        )
+        self.assertEqual(short_far["status"], "WAITING")
+        self.assertFalse(short_far["approaching"])
+
+        short_hit = apply_levels(
+            short_base, last=58.10, change_pct=None, today_high=58.90, today_low=58.00,
+            prev_high=60.78, prev_low=58.32, prev_date="2026-11-05",
+        )
+        self.assertEqual(short_hit["status"], "TRIGGERED")
+        self.assertFalse(short_hit["approaching"])
+
+        short_stopped = apply_levels(
+            short_base, last=61.10, change_pct=None, today_high=61.40, today_low=58.90,
+            prev_high=60.78, prev_low=58.32, prev_date="2026-11-05",
+        )
+        self.assertEqual(short_stopped["status"], "STOP_SIDE")
+        self.assertFalse(short_stopped["approaching"])
+
+    def test_page_keeps_chain_warning_quiet_and_wires_approach_sound(self):
+        html = (ROOT / "static" / "index.html").read_text()
+        self.assertIn(".st-APPROACHING", html)
+        self.assertIn("noteApproachingAlerts", html)
+        self.assertIn("intradayApproachSounded", html)
+        self.assertIn("Test alert sound", html)
+        self.assertIn('r.status !== "APPROACHING"', html)
+        self.assertIn("isChainNoise", html)
+        self.assertIn("JSON.parse(raw)", html)
+        self.assertIn("Could not read signals", html)
+        self.assertNotIn("Quotes delayed / limited — ", html)
+        self.assertEqual(appmod.health(), {"ok": True})
 
     def test_prior_session_bar_is_the_day_before_today(self):
         def stamp(y, m, d):
@@ -259,7 +359,7 @@ class IntradaySnapshotTests(unittest.TestCase):
         self.assertEqual(data["intradayReversals"], [])
         self.assertEqual(data["intradayBullishAsOf"], "2026-11-06 Ticker Levels")
         self.assertIsNone(data["intradayReversalsAsOf"])
-        self.assertEqual(data["signalsAsOf"], "2026-10-30 close")
+        self.assertEqual(data["signalsAsOf"], "2026-11-06 intraday (Reversals live; Weekly 2026-11-02 wtd provisional)")
         self.assertEqual(
             [c["symbol"] for c in data["reversalBearish"]],
             [row["symbol"] for row in REVERSAL_BEARISH],
@@ -305,7 +405,7 @@ class IntradaySnapshotTests(unittest.TestCase):
         self.assertEqual(card["prevDayLow"], 28.0)
         self.assertTrue(card["triggered"])
         self.assertEqual(data["intradayReversals"], [])
-        self.assertEqual(data["signalsAsOf"], "2026-10-30 close")
+        self.assertEqual(data["signalsAsOf"], "2026-11-06 intraday (Reversals live; Weekly 2026-11-02 wtd provisional)")
 
     def test_failed_refresh_keeps_intraday_cards(self):
         shell = appmod.build_shell_snapshot()
@@ -408,7 +508,7 @@ class IntradaySnapshotTests(unittest.TestCase):
                 self.assertEqual([c["symbol"] for c in body["intradayBullish"]], BULL_SEED)
                 self.assertEqual(body["intradayReversals"], [])
                 self.assertEqual(body["intradayBullishAsOf"], "2026-11-06 Ticker Levels")
-                self.assertEqual(body["signalsAsOf"], "2026-10-30 close")
+                self.assertEqual(body["signalsAsOf"], "2026-11-06 intraday (Reversals live; Weekly 2026-11-02 wtd provisional)")
                 self.assertEqual(body["refreshSec"], 120)
                 self.assertTrue(body["quotesPending"])
                 card = body["intradayBullish"][0]
@@ -417,7 +517,7 @@ class IntradaySnapshotTests(unittest.TestCase):
                 self.assertGreater(len(body["reversalBearish"]), 0)
                 self.assertGreater(len(body["earlySureShots"]), 0)
                 weekly_rev = {row["symbol"] for row in body["reversalBearish"]}
-                self.assertIn("SMR", weekly_rev)
+                self.assertIn("CRDO", weekly_rev)
                 self.assertIn("TER", {row["symbol"] for row in body["watchlist"]})
                 self.assertTrue((weekly_rev | {"CRDO", "TER"}).isdisjoint({c["symbol"] for c in body["intradayReversals"]}))
 

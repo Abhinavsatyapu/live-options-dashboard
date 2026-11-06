@@ -524,6 +524,8 @@ def mid_price(opt: Optional[dict]) -> Optional[float]:
 
 
 def find_contract(options: list[dict], strike: float) -> Optional[dict]:
+    if strike is None:
+        return None
     best = None
     best_diff = 1e18
     for o in options:
@@ -611,12 +613,15 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
         or plan.get("short_strike") is None
         or (
             plan.get("short_strike") is not None
+            and plan.get("long_strike") is not None
             and abs(float(plan["short_strike"]) - float(plan["long_strike"])) < 1e-9
             and plan.get("structure") == "atm"
         )
     )
-    long_leg = find_contract(legs, plan["long_strike"])
-    short_leg = None if is_atm else find_contract(legs, plan["short_strike"])
+    long_strike = plan.get("long_strike")
+    short_strike = plan.get("short_strike")
+    long_leg = find_contract(legs, long_strike)
+    short_leg = None if is_atm or short_strike is None else find_contract(legs, short_strike)
     long_mid = mid_price(long_leg)
     short_mid = mid_price(short_leg) if short_leg else None
     spread_mid = None
@@ -630,20 +635,25 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
         debit = spread_mid
     debit = float(debit) if debit is not None else 0.0
 
-    if is_atm:
+    # Armed rows can be saved before a strike is chosen. Still return the card.
+    if long_strike is None:
+        width = None
+        max_profit = None
+        breakeven = None
+    elif is_atm:
         width = None
         max_profit = None  # uncapped
         if side == "call":
-            breakeven = round(plan["long_strike"] + debit, 4)
+            breakeven = round(float(long_strike) + debit, 4)
         else:
-            breakeven = round(plan["long_strike"] - debit, 4)
+            breakeven = round(float(long_strike) - debit, 4)
     else:
-        width = abs(float(plan["short_strike"]) - float(plan["long_strike"]))
+        width = abs(float(short_strike) - float(long_strike))
         max_profit = round(width - debit, 4)
         if side == "call":
-            breakeven = round(plan["long_strike"] + debit, 4)
+            breakeven = round(float(long_strike) + debit, 4)
         else:
-            breakeven = round(plan["long_strike"] - debit, 4)
+            breakeven = round(float(long_strike) - debit, 4)
 
     pnl_per = None
     pnl_total = None
@@ -657,8 +667,8 @@ def enrich_spread(plan: dict, quote: dict, calls: list, puts: list) -> dict:
 
     T = years_to_expiry(plan["expiry"])
     delta = None
-    if spot is not None and iv is not None:
-        delta = bs_delta(spot, plan["long_strike"], T, R_RATE, iv, side)
+    if spot is not None and iv is not None and long_strike is not None:
+        delta = bs_delta(spot, float(long_strike), T, R_RATE, iv, side)
 
     atm_leg = find_atm(legs, spot) if spot else None
     atm = None
@@ -1357,12 +1367,8 @@ def me(request: Request):
     return {"ok": True, **info}
 
 
-@app.get("/api/snapshot")
-def snapshot(request: Request):
-    # Auth enforced by middleware; keep view-only for all roles.
-    # Always answer immediately. Yahoo work runs on a background thread and the
-    # next poll (or the in-flight refresh) picks up prices. A slow chain must
-    # not leave the tablet on "Connecting…".
+def _snapshot_payload() -> dict:
+    """Saved cards immediately. Never raise: Safari treats a non-JSON 500 as a pattern error and paints zero cards."""
     now = time.time()
     with _cache_lock:
         data = _cache.get("data")
@@ -1388,6 +1394,44 @@ def snapshot(request: Request):
     if live and ts:
         payload["snapshotAgeSec"] = round(max(0.0, time.time() - ts), 1)
     payload["refreshSec"] = SNAPSHOT_REFRESH_SEC
+    payload["ok"] = True
+    return payload
+
+
+@app.get("/api/snapshot")
+def snapshot(request: Request):
+    # Auth enforced by middleware; keep view-only for all roles.
+    # Always answer immediately with JSON. Yahoo work runs on a background thread.
+    try:
+        payload = _snapshot_payload()
+    except Exception as e:  # noqa: BLE001
+        print(f"[snapshot] handler failed: {_safe_err(e)}")
+        with _cache_lock:
+            prev = _cache.get("data")
+        if prev:
+            payload = dict(prev)
+            errs = [x for x in (payload.get("errors") or []) if not str(x).startswith("snapshot:")]
+            errs.append(f"snapshot: {_safe_err(e)}")
+            payload["errors"] = errs[:8]
+            payload["ok"] = True
+        else:
+            payload = {
+                "ok": True,
+                "errors": [f"snapshot: {_safe_err(e)}"],
+                "earlySureShots": [],
+                "weeklyBullish": [],
+                "weeklySqueeze": [],
+                "reversalBearish": [],
+                "watchlist": [],
+                "intradayBullish": [],
+                "intradayReversals": [],
+                "banner": BANNER,
+                "spy": {"price": None, "changePct": None},
+                "quotesPending": True,
+                "quotesLive": False,
+                "refreshSec": SNAPSHOT_REFRESH_SEC,
+                "signalsAsOf": None,
+            }
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

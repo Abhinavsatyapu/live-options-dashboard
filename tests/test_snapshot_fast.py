@@ -48,7 +48,7 @@ class SnapshotShellTests(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertTrue(data["quotesPending"])
         self.assertFalse(data["quotesLive"])
-        self.assertEqual(data["signalsAsOf"], "2026-10-30 close")
+        self.assertEqual(data["signalsAsOf"], "2026-11-06 intraday (Reversals live; Weekly 2026-11-02 wtd provisional)")
         self.assertEqual(data["refreshSec"], 120.0)
         self.assertIn("SPY negative gamma", data["banner"]["text"])
         self.assertEqual(
@@ -175,6 +175,63 @@ class SnapshotShellTests(unittest.TestCase):
                     busy = appmod._refreshing
                 if not busy:
                     break
+                time.sleep(0.05)
+            appmod.build_snapshot = real
+
+
+class MissingStrikeSnapshotTests(unittest.TestCase):
+    def test_armed_rows_without_strikes_still_return_json_cards(self):
+        import json
+
+        data = appmod.build_shell_snapshot()
+        json.dumps(data)
+        self.assertTrue(data["ok"])
+        armed = next(r for r in data["reversalBearish"] if r["symbol"] == "AFRM")
+        self.assertIsNone(armed["long_strike"])
+        self.assertIsNone(armed["breakeven"])
+        self.assertIn("CRDO", [r["symbol"] for r in data["reversalBearish"]])
+        self.assertGreater(len(data["intradayBullish"]), 0)
+        self.assertGreater(len(data["weeklyBullish"]) + len(data["weeklySqueeze"]), 0)
+
+    def test_snapshot_endpoint_is_json_not_a_500(self):
+        from fastapi.testclient import TestClient
+
+        real = appmod.build_snapshot
+
+        def quick(*_a, **_k):
+            data = appmod.build_shell_snapshot()
+            data["quotesPending"] = False
+            return data
+
+        appmod.build_snapshot = quick
+        with appmod._refresh_lock:
+            appmod._refreshing = False
+        with appmod._cache_lock:
+            appmod._cache["data"] = None
+            appmod._cache["ts"] = 0
+            appmod._cache["live"] = False
+        try:
+            with TestClient(appmod.app) as client:
+                login = client.post(
+                    "/login",
+                    data={"username": "abhinav", "password": "test-admin-local"},
+                    follow_redirects=False,
+                )
+                self.assertIn(login.status_code, (200, 303))
+                res = client.get("/api/snapshot")
+                self.assertEqual(res.status_code, 200)
+                self.assertIn("application/json", res.headers.get("content-type", ""))
+                body = res.json()
+                self.assertTrue(body["ok"])
+                self.assertIn("AFRM", [r["symbol"] for r in body["reversalBearish"]])
+                self.assertGreater(len(body["weeklySqueeze"]) + len(body["reversalBearish"]), 0)
+                health = client.get("/api/health")
+                self.assertEqual(health.json(), {"ok": True})
+        finally:
+            for _ in range(50):
+                with appmod._refresh_lock:
+                    if not appmod._refreshing:
+                        break
                 time.sleep(0.05)
             appmod.build_snapshot = real
 
