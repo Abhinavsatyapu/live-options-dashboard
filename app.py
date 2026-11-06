@@ -31,10 +31,13 @@ ET = ZoneInfo("America/New_York")
 SNAPSHOT_REFRESH_SEC = 120.0
 QUOTE_BUDGET_SEC = 12.0
 CHAIN_BUDGET_SEC = 15.0
+# Prior-session highs/lows for the intraday pages. Runs beside the quote pass.
+DAILY_BUDGET_SEC = 8.0
 R_RATE = 0.05
 
 # Signals as of Fri 2026-10-30 close — structures from Sep14–Oct30 options backtest
 from trade_config import WEEKLY_SIGNALS, REVERSAL_BEARISH
+from intraday_signals import listed_symbols, snapshot_section
 
 from positions_live import (
     enrich_positions,
@@ -113,6 +116,7 @@ class YahooClient:
         self._host_i = 0
         self._quote_cache: dict[str, Any] = {"ts": 0.0, "data": {}}
         self._last_good_quotes: dict[str, dict] = {}
+        self._last_good_daily: dict[str, dict] = {}
         self._chain_cache: dict[tuple[str, int], Any] = {}
         self._chain_cache_ts: dict[tuple[str, int], float] = {}
         self._last_good_chains: dict[tuple[str, int], Any] = {}
@@ -240,11 +244,15 @@ class YahooClient:
                     chg_pct = (float(px) / float(prev) - 1.0) * 100.0
             except Exception:
                 chg_pct = None
+            day_high = meta.get("regularMarketDayHigh")
+            day_low = meta.get("regularMarketDayLow")
             return {
                 "symbol": symbol.upper(),
                 "regularMarketPrice": float(px),
                 "regularMarketPreviousClose": float(prev) if prev is not None else None,
                 "regularMarketChangePercent": chg_pct,
+                "regularMarketDayHigh": float(day_high) if day_high else None,
+                "regularMarketDayLow": float(day_low) if day_low else None,
                 "regularMarketTime": meta.get("regularMarketTime"),
                 "_source": "v8_chart",
                 "_fetched_at": time.time(),
@@ -373,6 +381,70 @@ class YahooClient:
 
     def quotes_stale_age(self) -> Optional[float]:
         return self._quotes_stale_age
+
+    def cached_prior_sessions(self, symbols: list[str]) -> dict[str, dict]:
+        """Last successful previous-session levels, with no network."""
+        with self._lock:
+            saved = dict(self._last_good_daily)
+        return {s.upper(): dict(saved[s.upper()]) for s in symbols if s.upper() in saved}
+
+    def _daily_one(self, symbol: str) -> Optional[dict]:
+        """One v8 daily chart. Uses its own GET so it does not share the quote session."""
+        from intraday_signals import parse_daily_chart
+
+        sym = symbol.upper()
+        today = datetime.now(ET).date()
+        headers = {"User-Agent": UA}
+        for host in self._hosts:
+            try:
+                response = requests.get(
+                    f"{host}/v8/finance/chart/{sym}",
+                    params={"interval": "1d", "range": "1mo", "includePrePost": "false"},
+                    headers=headers,
+                    timeout=6,
+                )
+                if response.status_code == 429 or not response.ok:
+                    continue
+                parsed = parse_daily_chart(response.json(), today)
+                if parsed and parsed.get("prevDayHigh") is not None and parsed.get("prevDayLow") is not None:
+                    parsed["_fetched_at"] = time.time()
+                    return parsed
+            except Exception:
+                continue
+        return None
+
+    def prior_sessions(self, symbols: list[str], budget_sec: Optional[float] = None) -> dict[str, dict]:
+        """Previous regular-session high/low. Misses fall back to the last good bar."""
+        syms = [s.upper() for s in symbols if s]
+        if not syms:
+            return {}
+        out: dict[str, dict] = {}
+        timeout = 8.0 if budget_sec is None else max(0.5, float(budget_sec))
+        ex = ThreadPoolExecutor(max_workers=min(8, len(syms)))
+        try:
+            futs = {ex.submit(self._daily_one, s): s for s in syms}
+            done, pending = wait(set(futs), timeout=timeout)
+            for fut in pending:
+                fut.cancel()
+            for fut in done:
+                sym = futs[fut]
+                try:
+                    parsed = fut.result()
+                except Exception:
+                    parsed = None
+                if parsed:
+                    out[sym] = parsed
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+        with self._lock:
+            for sym, row in out.items():
+                self._last_good_daily[sym] = row
+            for sym in syms:
+                if sym not in out and sym in self._last_good_daily:
+                    cached = dict(self._last_good_daily[sym])
+                    cached["_stale"] = True
+                    out[sym] = cached
+        return out
 
     def options_chain(self, symbol: str, expiry_unix: int, timeout: float = 18, attempts: int = 4) -> dict:
         key = (symbol.upper(), int(expiry_unix))
@@ -707,7 +779,9 @@ def enrich_early(early: dict, quotes: dict, chains: dict) -> list:
 
 def _quote_symbols() -> list[str]:
     watch_syms = [w["symbol"] for w in WATCHLIST]
-    return sorted(set([p["symbol"] for p in WEEKLY_BULLISH + REVERSAL_BEARISH] + watch_syms + ["SPY"]))
+    return sorted(
+        set([p["symbol"] for p in WEEKLY_BULLISH + REVERSAL_BEARISH] + watch_syms + ["SPY"] + listed_symbols())
+    )
 
 
 def _option_jobs() -> list[tuple[str, str]]:
@@ -764,6 +838,7 @@ def _assemble_snapshot(
     errors: list[str],
     *,
     quotes_pending: bool,
+    daily_levels: Optional[dict] = None,
 ) -> dict:
     weekly = []
     for p in WEEKLY_BULLISH:
@@ -849,6 +924,12 @@ def _assemble_snapshot(
         ee["alertKinds"] = kinds_for_ticker(str(sym), exit_state)
         early_out.append(ee)
 
+    intraday = snapshot_section(quotes, daily_levels or {})
+    merged_errors = list(errors) + list(intraday.get("errors") or [])
+    for bucket in ("intradayBullish", "intradayReversals"):
+        for row in intraday.get(bucket) or []:
+            row["alertKinds"] = kinds_for_ticker(str(row.get("symbol") or ""), exit_state)
+
     return {
         "ok": True,
         "updatedAt": now.isoformat(),
@@ -866,6 +947,12 @@ def _assemble_snapshot(
         "watchlist": watch,
         "earlySureShots": early_out,
         "earlyRules": (load_early().get("rules") or {}),
+        "intradayBullish": intraday["intradayBullish"],
+        "intradayReversals": intraday["intradayReversals"],
+        "intradayBullishAsOf": intraday["intradayBullishAsOf"],
+        "intradayReversalsAsOf": intraday["intradayReversalsAsOf"],
+        "intradayBullishRule": intraday["intradayBullishRule"],
+        "intradayReversalsRule": intraday["intradayReversalsRule"],
         "signalsAsOf": "2026-10-30 close",
         "backtestNote": (
             "Standing rule: bullish ONLY from Weekly; bearish ONLY from Reversals "
@@ -878,7 +965,7 @@ def _assemble_snapshot(
             "Not financial advice. Yahoo option quotes may be ~15 min delayed "
             "intraday and are Friday-close over the weekend. No order placement."
         ),
-        "errors": errors[:8],
+        "errors": merged_errors[:8],
         "quotesSource": "signals" if quotes_pending else "v8_chart",
         "quotesStaleAgeSec": None if quotes_pending else yahoo.quotes_stale_age(),
         "quotesPending": quotes_pending,
@@ -903,8 +990,11 @@ def build_snapshot(publish=None) -> dict:
     """Quote + chain enrichment. `publish` may be called with a partial result.
 
     Prices are published before option chains so a slow chain does not hide quotes.
+    Prior-day highs and lows for the intraday pages are fetched beside the quote
+    pass and never on the HTTP request thread.
     """
     symbols = _quote_symbols()
+    intra = listed_symbols()
     try:
         from earnings import start_warm_earnings
 
@@ -913,22 +1003,64 @@ def build_snapshot(publish=None) -> dict:
         pass
 
     errors: list[str] = []
+    box: dict[str, Any] = {"quotes": {}, "levels": {}, "q_err": None, "l_err": None}
+
+    def fetch_quotes() -> None:
+        try:
+            box["quotes"] = yahoo.quotes(symbols, budget_sec=QUOTE_BUDGET_SEC)
+        except Exception as e:  # noqa: BLE001
+            box["q_err"] = f"quotes: {e.__class__.__name__}"
+            box["quotes"] = yahoo.cached_quotes(symbols)
+
+    def fetch_levels() -> None:
+        try:
+            box["levels"] = yahoo.prior_sessions(intra, budget_sec=DAILY_BUDGET_SEC)
+        except Exception as e:  # noqa: BLE001
+            box["l_err"] = f"prior-day: {e.__class__.__name__}"
+            box["levels"] = yahoo.cached_prior_sessions(intra)
+
+    def _errs(include_levels: bool) -> list[str]:
+        out = list(errors)
+        if box.get("q_err"):
+            out.append(box["q_err"])
+        if include_levels and box.get("l_err"):
+            out.append(box["l_err"])
+        return out
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    quote_job = pool.submit(fetch_quotes)
+    level_job = pool.submit(fetch_levels)
     try:
-        quotes = yahoo.quotes(symbols, budget_sec=QUOTE_BUDGET_SEC)
-    except Exception as e:  # noqa: BLE001
-        errors.append(f"quotes: {e.__class__.__name__}")
-        quotes = yahoo.cached_quotes(symbols)
-
-    partial = _assemble_snapshot(quotes, {}, list(errors), quotes_pending=False)
-    if publish:
-        publish(partial)
-
-    chains, chain_errors = _fetch_chains(_option_jobs(), CHAIN_BUDGET_SEC)
-    errors.extend(chain_errors)
-    full = _assemble_snapshot(quotes, chains, errors, quotes_pending=False)
-    if publish:
-        publish(full)
-    return full
+        quote_job.result()
+        levels_ready = level_job.done()
+        if levels_ready:
+            level_job.result()
+            levels_now = box["levels"] or {}
+        else:
+            levels_now = yahoo.cached_prior_sessions(intra)
+        partial = _assemble_snapshot(
+            box["quotes"], {}, _errs(levels_ready), quotes_pending=False, daily_levels=levels_now
+        )
+        if publish:
+            publish(partial)
+        if not levels_ready:
+            level_job.result()
+            levels_now = box["levels"] or levels_now
+            priced = _assemble_snapshot(
+                box["quotes"], {}, _errs(True), quotes_pending=False, daily_levels=levels_now
+            )
+            if publish:
+                publish(priced)
+        chains, chain_errors = _fetch_chains(_option_jobs(), CHAIN_BUDGET_SEC)
+        errors.extend(chain_errors)
+        full = _assemble_snapshot(
+            box["quotes"], chains, _errs(True), quotes_pending=False, daily_levels=levels_now
+        )
+        if publish:
+            publish(full)
+        return full
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _store_snapshot(data: dict, *, live: bool) -> None:
@@ -1210,8 +1342,11 @@ def snapshot(request: Request):
 
 
 @app.get("/")
+@app.get("/intraday-bullish")
+@app.get("/intraday-reversals")
 def index():
     # Mobile Safari will keep a cached index.html (and the old 5s poll) unless told not to.
+    # The two intraday routes are separate pages that share this shell and session.
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
 
 

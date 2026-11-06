@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<script>
+(function () {
+  var path = location.pathname.replace(/\/$/, "") || "/";
+  document.documentElement.dataset.view = path === "/intraday-bullish" ? "bull" : (path === "/intraday-reversals" ? "rev" : "plans");
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0b0f14" />
 <title>Options Terminal</title>
@@ -116,6 +122,7 @@
     padding: 8px 12px; margin-bottom: 10px; color: var(--muted); font-size: 11px;
     max-height: 3.2em; overflow: hidden;
   }
+  #intraday-rule { max-height: none; }
   .btnote.expanded { max-height: none; }
   .btnote-toggle {
     background: none; border: none; color: var(--blue); font-size: 11px; font-weight: 650;
@@ -141,7 +148,35 @@
     transition: border-color .12s ease, color .12s ease, background .12s ease;
   }
   .tab:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  a.tab, a.tab:visited { text-decoration: none; color: var(--muted); }
   .tab.active { background: var(--panel2); color: var(--text); border-color: var(--blue); }
+  .view-nav { margin-bottom: 8px; }
+  .title-bull, .title-rev, .rule-bull, .rule-rev { display: none; }
+  html[data-view="bull"] .title-plans,
+  html[data-view="rev"] .title-plans { display: none; }
+  html[data-view="bull"] .title-bull,
+  html[data-view="rev"] .title-rev { display: inline; }
+  html[data-view="bull"] .rule-bull,
+  html[data-view="rev"] .rule-rev { display: inline; }
+  html[data-view="plans"] .intraday-only { display: none !important; }
+  html[data-view="bull"] .plan-only,
+  html[data-view="rev"] .plan-only,
+  html[data-view="bull"] #btnote,
+  html[data-view="bull"] #btnote-toggle,
+  html[data-view="rev"] #btnote,
+  html[data-view="rev"] #btnote-toggle { display: none !important; }
+  html[data-view="plans"] a[data-view="plans"],
+  html[data-view="bull"] a[data-view="bull"],
+  html[data-view="rev"] a[data-view="rev"] {
+    background: var(--panel2); color: var(--text); border-color: var(--blue);
+  }
+  html[data-view="plans"] a[data-view="plans"] .count,
+  html[data-view="bull"] a[data-view="bull"] .count,
+  html[data-view="rev"] a[data-view="rev"] .count { background: #1e3a5f; color: #cfe2ff; }
+  .card.triggered { border-color: #2a5a3a; box-shadow: inset 0 0 0 1px #1e3a28; }
+  .card.stop-side { border-color: #5a2a2a; box-shadow: inset 0 0 0 1px #3d1e24; }
+  .st-STOP_SIDE, .st-LEVELS { background: #3d1e24; color: var(--red); }
+  .st-LEVELS { background: #2a3140; color: #c0c8d8; }
   .tab .count {
     background: #243044; color: var(--muted); border-radius: 999px;
     font-size: 11px; font-weight: 750; padding: 2px 7px; min-width: 22px; text-align: center;
@@ -273,7 +308,7 @@
     <div>
       <div class="brand-row">
         <div class="mark" aria-hidden="true"></div>
-        <h1>Options Terminal</h1>
+        <h1><span class="title-plans">Options Terminal</span><span class="title-bull">Intraday Bullish</span><span class="title-rev">Intraday Reversals</span></h1>
         <span class="pill warn" id="backdrop-pill">—</span>
         <span class="pill mkt-closed" id="mkt-pill">US hours</span>
       </div>
@@ -306,7 +341,12 @@
   <button type="button" class="btnote-toggle" id="btnote-toggle" hidden>Show standing rule</button>
 
   <div class="tabs-wrap">
-    <div class="tabs" role="tablist">
+    <nav class="tabs view-nav" aria-label="Pages">
+      <a class="tab" href="/" data-view="plans">Dashboard</a>
+      <a class="tab" href="/intraday-bullish" data-view="bull">Intraday Bullish <span class="count" id="c-ibull">0</span></a>
+      <a class="tab" href="/intraday-reversals" data-view="rev">Intraday Reversals <span class="count" id="c-irev">0</span></a>
+    </nav>
+    <div class="tabs plan-only" role="tablist">
       <button class="tab active" role="tab" data-tab="early" aria-selected="true">Early ★ <span class="count" id="c-early">0</span></button>
       <button class="tab" role="tab" data-tab="weekly" aria-selected="false">Weekly ★ <span class="count" id="c-weekly">0</span></button>
       <button class="tab" role="tab" data-tab="squeeze" aria-selected="false">Squeeze <span class="count" id="c-squeeze">0</span></button>
@@ -316,12 +356,18 @@
     </div>
   </div>
 
-  <section class="panel active" id="panel-early" role="tabpanel"><div class="skeleton" id="sk-early"><div class="sk"></div><div class="sk"></div></div></section>
-  <section class="panel" id="panel-weekly" role="tabpanel"></section>
-  <section class="panel" id="panel-squeeze" role="tabpanel"></section>
-  <section class="panel" id="panel-reversal" role="tabpanel"></section>
-  <section class="panel" id="panel-watch" role="tabpanel"></section>
-  <section class="panel" id="panel-positions" role="tabpanel">
+  <div class="btnote intraday-only" id="intraday-rule">
+    <span class="rule-bull">Intraday bullish: long if the previous regular-session high breaks. Stop is the previous regular-session low. FADE, Book A Neutral, and Book B Neutral are not shown.</span>
+    <span class="rule-rev">Intraday reversal: short if the previous regular-session low breaks. Stop is the previous regular-session high.</span>
+  </div>
+
+  <section class="panel active plan-only" id="panel-early" role="tabpanel"><div class="skeleton" id="sk-early"><div class="sk"></div><div class="sk"></div></div></section>
+  <section class="panel plan-only" id="panel-weekly" role="tabpanel"></section>
+  <section class="panel plan-only" id="panel-squeeze" role="tabpanel"></section>
+  <section class="panel plan-only" id="panel-reversal" role="tabpanel"></section>
+  <section class="panel plan-only" id="panel-watch" role="tabpanel"></section>
+  <section class="intraday-only" id="panel-intraday" aria-live="polite"><div class="skeleton"><div class="sk"></div><div class="sk"></div></div></section>
+  <section class="panel plan-only" id="panel-positions" role="tabpanel">
     <div class="summary-bar" id="pos-summary"></div>
     <div class="admin-only card" id="pos-form-wrap">
       <div class="row-top"><div><b>Add / edit position</b> <span class="note" id="form-hint">Rulebook defaults autofill stop/target</span></div></div>
@@ -372,6 +418,14 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const TAB_KEY = "opts_terminal_tab";
+const VIEW = document.documentElement.dataset.view || "plans";
+if (VIEW === "bull") document.title = "Intraday Bullish · Options Terminal";
+if (VIEW === "rev") document.title = "Intraday Reversals · Options Terminal";
+document.querySelectorAll("a[data-view]").forEach(a => {
+  const on = a.dataset.view === VIEW;
+  a.classList.toggle("active", on);
+  if (on) a.setAttribute("aria-current", "page");
+});
 async function fetchWithTimeout(url, opts = {}, ms = 45000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
@@ -521,6 +575,65 @@ function earlyCard(r) {
         ${badges(r.alertKinds, r.earningsBadge)}
       </div>
       <span class="status ${stClass}">${st}</span>
+    </div>
+    <div class="grid">${primary}${secondary}</div>
+    <details class="details"><summary>Details</summary><div class="grid">${secondary}</div></details>
+  </div>`;
+}
+
+function fmtGex(v) {
+  if (v == null || v === "") return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return (n > 0 || n === 0 ? "+" : "") + n.toFixed(2);
+}
+function fmtAtm(v) {
+  if (v == null || v === "") return "—";
+  if (typeof v === "string") return v;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : (n < 0 ? "-" : "");
+  const abs = Math.abs(n);
+  if (abs >= 1e6) {
+    const millions = abs / 1e6;
+    const text = millions >= 10 ? millions.toFixed(0) : millions.toFixed(1).replace(/\.0$/, "");
+    return sign + text + "M";
+  }
+  return sign + abs.toLocaleString("en-US");
+}
+function intradayCard(r) {
+  const status = r.levelsPending ? "LEVELS" : (r.status || "WAITING");
+  const stClass = "st-" + status;
+  const label = status === "STOP_SIDE" ? "STOP SIDE" : status;
+  const long = r.side !== "short";
+  const flash = flashClass(r.symbol || r.ticker, r.price);
+  const triggered = r.levelsPending ? "—" : (r.triggered ? "Yes" : "No");
+  const family = [r.family, r.type].filter(Boolean).join(" · ") || "Signal";
+  const primary = `
+      ${kv("Last", `<span class="px ${flash}">${fmt(r.price)}</span> <span class="${clsChg(r.changePct)}">${fmtPct(r.changePct)}${arrow(r.changePct)}</span>`, "", "primary")}
+      ${kv("Signal time", r.signalTime || "—", "", "primary")}
+      ${kv("Δgex", fmtGex(r.deltaGex), (r.deltaGex == null ? "" : (Number(r.deltaGex) >= 0 ? "pos" : "neg")), "primary")}
+      ${kv("ATM", fmtAtm(r.atm), "", "primary")}
+      ${kv("Prev high", fmt(r.prevDayHigh), "", "primary")}
+      ${kv("Prev low", fmt(r.prevDayLow), "", "primary")}
+      ${kv(long ? "Entry · PDH" : "Entry · PDL", fmt(r.entry), "", "primary")}
+      ${kv(long ? "Stop · PDL" : "Stop · PDH", fmt(r.stop), "", "primary")}
+      ${kv("Triggered", triggered, r.triggered ? "pos" : "", "primary")}`;
+  const secondary = `
+      ${kv("Today high", fmt(r.todayHigh), "", "secondary")}
+      ${kv("Today low", fmt(r.todayLow), "", "secondary")}
+      ${kv("Prev session", r.prevDayDate || "—", "", "secondary")}`;
+  const tone = r.triggered ? "triggered" : (r.stopSideTraded ? "stop-side" : "");
+  return `<div class="card ${tone}">
+    <div class="row-top">
+      <div>
+        <span class="sym">${r.symbol || r.ticker || "—"}</span>
+        <span class="tag">${family}</span>
+        <div class="trade-line">${long ? "Long" : "Short"} · ${r.signalTime || "—"} · Δgex ${fmtGex(r.deltaGex)}</div>
+        <div class="note">${r.statusNote || ""}</div>
+        ${badges(r.alertKinds, r.earningsBadge)}
+      </div>
+      <span class="status ${stClass}">${label}</span>
     </div>
     <div class="grid">${primary}${secondary}</div>
     <details class="details"><summary>Details</summary><div class="grid">${secondary}</div></details>
@@ -967,7 +1080,13 @@ async function refresh(opts) {
     $("meta").textContent = pending
       ? "Signals loaded · fetching quotes…"
       : `Updated ${data.updatedIST || "—"}`;
-    $("signals-asof").textContent = data.signalsAsOf ? ("· Signals " + data.signalsAsOf) : "";
+    if (VIEW === "bull") {
+      $("signals-asof").textContent = data.intradayBullishAsOf ? ("· Signals " + data.intradayBullishAsOf) : "";
+    } else if (VIEW === "rev") {
+      $("signals-asof").textContent = data.intradayReversalsAsOf ? ("· Signals " + data.intradayReversalsAsOf) : "· No reversal list loaded";
+    } else {
+      $("signals-asof").textContent = data.signalsAsOf ? ("· Signals " + data.signalsAsOf) : "";
+    }
     const btxt = (data.banner && data.banner.text) || "Size down";
     $("banner").innerHTML = `<span class="pill">SIZE DOWN</span> <span>${btxt}</span>`;
     $("backdrop-pill").textContent = (data.banner && data.banner.gex != null)
@@ -982,11 +1101,15 @@ async function refresh(opts) {
     const squeeze = data.weeklySqueeze || [];
     const reversal = data.reversalBearish || [];
     const watch = data.watchlist || [];
+    const ibull = data.intradayBullish || [];
+    const irev = data.intradayReversals || [];
     $("c-early").textContent = String(early.length);
     $("c-weekly").textContent = String(weekly.length);
     $("c-squeeze").textContent = String(squeeze.length);
     $("c-reversal").textContent = String(reversal.length);
     $("c-watch").textContent = String(watch.length);
+    $("c-ibull").textContent = String(ibull.length);
+    $("c-irev").textContent = String(irev.length);
 
     $("panel-early").innerHTML = early.length
       ? early.map(earlyCard).join("")
@@ -995,6 +1118,14 @@ async function refresh(opts) {
     $("panel-squeeze").innerHTML = squeeze.length ? squeeze.map(r => signalCard(r, "weekly")).join("") : emptyState("No squeeze cards", "");
     $("panel-reversal").innerHTML = reversal.length ? reversal.map(r => signalCard(r, "reversal")).join("") : emptyState("No reversal bearish cards", "");
     $("panel-watch").innerHTML = watchTable(watch);
+    if (VIEW === "bull" || VIEW === "rev") {
+      const rows = VIEW === "bull" ? ibull : irev;
+      const emptyTitle = VIEW === "bull" ? "No intraday bullish signals" : "No intraday reversal signals";
+      const emptySub = VIEW === "bull"
+        ? "Strong Zone Monitor prints show up here. FADE and neutral book types stay off this page."
+        : "No Zone Monitor reversal names are loaded yet. This page stays empty until intraday_reversals.json is updated.";
+      $("panel-intraday").innerHTML = rows.length ? rows.map(intradayCard).join("") : emptyState(emptyTitle, emptySub);
+    }
 
     const errs = data.errors || [];
     const staleAge = data.quotesStaleAgeSec;

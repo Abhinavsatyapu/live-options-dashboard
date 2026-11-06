@@ -1,0 +1,114 @@
+{
+  "signalsAsOf": "2026-11-06 Ticker Levels",
+  "note": "Zone Monitor ticker-level prints for Intraday Bullish. Update this file in place. The app keeps the latest print per ticker and hides FADE, Book A Neutral, and Book B Neutral. Entry and stop come from the previous regular-session high and low.",
+  "prints": [
+    {
+      "ticker": "ENPH",
+      "date": "2026-11-06",
+      "time": "10:09",
+      "family": "IGN BOOK",
+      "type": "IGN-B",
+      "deltaGex": 0.35,
+      "atm": null
+    },
+    {
+      "ticker": "KDP",
+      "date": "2026-11-06",
+      "time": "10:05",
+      "family": "FLOW STATE",
+      "type": "CONTINUATION",
+      "deltaGex": -0.03,
+      "atm": null
+    },
+    {
+      "ticker": "PYPL",
+      "date": "2026-11-06",
+      "time": "09:59",
+      "family": "FLOW STATE",
+      "type": "CONTINUATION",
+      "deltaGex": 0.03,
+      "atm": null
+    },
+    {
+      "ticker": "VCYT",
+      "date": "2026-11-06",
+      "time": "09:53",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": 0.78,
+      "atm": null
+    },
+    {
+      "ticker": "ABSI",
+      "date": "2026-11-06",
+      "time": "09:44",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": -0.09,
+      "atm": null
+    },
+    {
+      "ticker": "GE",
+      "date": "2026-11-06",
+      "time": "09:40",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": 0.1,
+      "atm": null
+    },
+    {
+      "ticker": "FSLR",
+      "date": "2026-11-06",
+      "time": "09:38",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": 0.03,
+      "atm": null
+    },
+    {
+      "ticker": "BEAM",
+      "date": "2026-11-06",
+      "time": "09:37",
+      "family": "IGN BOOK",
+      "type": "IGN-B",
+      "deltaGex": 0.33,
+      "atm": null
+    },
+    {
+      "ticker": "PTRN",
+      "date": "2026-11-06",
+      "time": "09:33",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": 0.17,
+      "atm": null
+    },
+    {
+      "ticker": "SQQQ",
+      "date": "2026-11-06",
+      "time": "09:32",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": -0.13,
+      "atm": null
+    },
+    {
+      "ticker": "PBE",
+      "date": "2026-11-06",
+      "time": "09:30",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": 0.0,
+      "atm": null
+    },
+    {
+      "ticker": "KYMR",
+      "date": "2026-11-06",
+      "time": "09:27",
+      "family": "FLOW STATE",
+      "type": "EXHAUSTION",
+      "deltaGex": 0.08,
+      "atm": null
+    }
+  ]
+}
