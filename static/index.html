@@ -1028,6 +1028,67 @@ function scheduleCatchup() {
     refresh({ positions: false });
   }, delay);
 }
+function isChainNoise(message) {
+  const text = String(message || "");
+  return /401|\/v7\/finance\/options|option chains:/i.test(text);
+}
+function applyIntradayQuoteWarn(data, rows, pending) {
+  const warn = $("quote-warn");
+  $("errors").textContent = "";
+  const listed = rows || [];
+  if (!listed.length) {
+    warn.classList.remove("show");
+    return;
+  }
+  if (pending) {
+    warn.classList.add("show");
+    warn.textContent = "Signal cards are ready. Live quotes are still loading.";
+    return;
+  }
+  if (listed.some(r => r.price == null)) {
+    warn.classList.add("show");
+    warn.textContent = "Some underlying quotes are delayed.";
+    return;
+  }
+  if (listed.some(r => r.levelsPending)) {
+    warn.classList.add("show");
+    warn.textContent = "Prior-day high/low still loading for some names.";
+    return;
+  }
+  warn.classList.remove("show");
+}
+function applyPlanQuoteWarn(data, spyPx, pending, staleAge) {
+  const warn = $("quote-warn");
+  const other = (data.errors || []).filter(e => !isChainNoise(e));
+  $("errors").textContent = other.length > 1 ? ("Also: " + other.slice(1, 3).join(" · ")) : "";
+  const midsDelayed = !!data.optionMidsDelayed || (data.errors || []).some(isChainNoise);
+  if (pending) {
+    warn.classList.add("show");
+    warn.textContent = "Signal cards are ready. Live quotes are still loading.";
+    return;
+  }
+  if (spyPx == null) {
+    warn.classList.add("show");
+    warn.textContent = "Quotes delayed — live prices temporarily unavailable.";
+    return;
+  }
+  if (staleAge != null && staleAge > 60) {
+    warn.classList.add("show");
+    warn.textContent = `Showing last-good quotes (~${Math.round(staleAge)}s old). Yahoo refresh limited.`;
+    return;
+  }
+  if (midsDelayed) {
+    warn.classList.add("show");
+    warn.textContent = "Some option mids are delayed.";
+    return;
+  }
+  if (other.some(e => /^(quotes:|prior-day:|refresh:)/.test(String(e)))) {
+    warn.classList.add("show");
+    warn.textContent = "Showing the last update. A quote refresh did not finish.";
+    return;
+  }
+  warn.classList.remove("show");
+}
 function noteSnapshotFailure(e) {
   const aborted = e && (e.name === "AbortError" || /abort/i.test(String(e.message || e)));
   if (!LAST_DATA) {
@@ -1127,22 +1188,12 @@ async function refresh(opts) {
       $("panel-intraday").innerHTML = rows.length ? rows.map(intradayCard).join("") : emptyState(emptyTitle, emptySub);
     }
 
-    const errs = data.errors || [];
     const staleAge = data.quotesStaleAgeSec;
-    const quoteBad = !pending && (errs.length > 0 || spyPx == null || (staleAge != null && staleAge > 60));
-    $("quote-warn").classList.toggle("show", pending || quoteBad);
-    if (pending) {
-      $("quote-warn").textContent = "Signal cards are ready. Live quotes are still loading.";
-    } else if (quoteBad) {
-      if (spyPx != null && staleAge != null) {
-        $("quote-warn").textContent = `Showing last-good quotes (~${Math.round(staleAge)}s old). Yahoo refresh limited.`;
-      } else if (errs.length) {
-        $("quote-warn").textContent = "Quotes delayed / limited — " + String(errs[0]).slice(0, 120);
-      } else {
-        $("quote-warn").textContent = "Quotes delayed — live prices temporarily unavailable.";
-      }
+    if (VIEW === "bull" || VIEW === "rev") {
+      applyIntradayQuoteWarn(data, VIEW === "bull" ? ibull : irev, pending);
+    } else {
+      applyPlanQuoteWarn(data, spyPx, pending, staleAge);
     }
-    $("errors").textContent = errs.length > 1 ? ("Also: " + errs.slice(1, 3).join(" · ")) : "";
     $("footer").textContent = (data.disclaimer || "Not financial advice.") + " Admin edits positions; guest read-only. No order placement.";
     updateKpis();
     if (LAST_LIVE) stopCatchup();

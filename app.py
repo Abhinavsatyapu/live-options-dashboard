@@ -461,9 +461,10 @@ class YahooClient:
                 timeout=timeout,
                 attempts=attempts,
             )
-        except Exception:
+        except Exception as e:
             with self._lock:
                 if key in self._last_good_chains:
+                    print(f"[snapshot] chain last-good {symbol.upper()}: {_safe_err(e)}")
                     return self._last_good_chains[key]
             raise
         try:
@@ -784,30 +785,71 @@ def _quote_symbols() -> list[str]:
     )
 
 
-def _option_jobs() -> list[tuple[str, str]]:
+def _is_chain_noise(message: object) -> bool:
+    """Option-chain misses are not a quote outage and must not reach the banner."""
+    text = str(message or "")
+    lowered = text.lower()
+    return (
+        "401" in text
+        or "/v7/finance/options" in lowered
+        or "option chains:" in lowered
+        or lowered.startswith("chain:")
+    )
+
+
+def _expiry_date(expiry: str) -> Optional[date]:
+    try:
+        return date.fromisoformat(str(expiry)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _option_jobs(today: Optional[date] = None) -> list[tuple[str, str]]:
+    """Option chains worth a Yahoo /v7 call.
+
+    Skip rows are not traded, so they must not spend the crumb quota.
+    An expiry that is today or already past in ET is 0DTE or dead. Those
+    calls 401 on Render and crowd out chains that are still live.
+    A later expiry on the same symbol stays (COHR's Nov 13 put is not
+    dropped because the Nov 6 squeeze is skipped). Open positions load
+    their own marks on /api/positions, not from this list.
+    """
+    today = today or datetime.now(ET).date()
     jobs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for p in WEEKLY_BULLISH + REVERSAL_BEARISH:
-        key = (p["symbol"], p["expiry"])
-        if key not in seen:
-            seen.add(key)
-            jobs.append(key)
+    for plan in WEEKLY_BULLISH + REVERSAL_BEARISH:
+        if plan.get("skip"):
+            continue
+        exp = str(plan.get("expiry") or "")
+        exp_day = _expiry_date(exp)
+        if exp_day is None or exp_day <= today:
+            continue
+        key = (plan["symbol"], exp)
+        if key in seen:
+            continue
+        seen.add(key)
+        jobs.append(key)
     return jobs
 
 
-def _fetch_chains(jobs: list[tuple[str, str]], budget_sec: float) -> tuple[dict, list[str]]:
-    """Fetch as many option chains as fit in the budget. Stragglers are left behind."""
+def _fetch_chains(jobs: list[tuple[str, str]], budget_sec: float) -> tuple[dict, int]:
+    """Fetch as many option chains as fit in the budget. Stragglers are left behind.
+
+    A miss keeps the last good chain inside YahooClient and is only counted
+    here. The raw Yahoo status is not returned to the page.
+    """
     chains: dict[tuple[str, str], tuple] = {}
-    errors: list[str] = []
+    misses = 0
     if not jobs:
-        return chains, errors
+        return chains, 0
 
     def work(sym: str, exp: str):
         try:
             raw = yahoo.options_chain(sym, expiry_unix(exp), timeout=6, attempts=1)
             return sym, exp, chain_legs(raw), None
         except Exception as e:  # noqa: BLE001
-            return sym, exp, None, f"{sym} {exp}: {e}"
+            print(f"[snapshot] chain miss {sym} {exp}: {_safe_err(e)}")
+            return sym, exp, None, "miss"
 
     ex = ThreadPoolExecutor(max_workers=3)
     try:
@@ -819,17 +861,19 @@ def _fetch_chains(jobs: list[tuple[str, str]], budget_sec: float) -> tuple[dict,
             try:
                 sym, exp, legs, err = fut.result()
             except Exception as e:  # noqa: BLE001
-                errors.append(f"chain: {e.__class__.__name__}")
+                print(f"[snapshot] chain miss: {_safe_err(e)}")
+                misses += 1
                 continue
             if err:
-                errors.append(err)
+                misses += 1
             if legs is not None:
                 chains[(sym, exp)] = legs
         if pending:
-            errors.append(f"option chains: {len(pending)} still loading")
+            misses += len(pending)
+            print(f"[snapshot] option chains: {len(pending)} still loading")
     finally:
         ex.shutdown(wait=False, cancel_futures=True)
-    return chains, errors
+    return chains, misses
 
 
 def _assemble_snapshot(
@@ -839,6 +883,7 @@ def _assemble_snapshot(
     *,
     quotes_pending: bool,
     daily_levels: Optional[dict] = None,
+    option_mids_delayed: bool = False,
 ) -> dict:
     weekly = []
     for p in WEEKLY_BULLISH:
@@ -965,7 +1010,8 @@ def _assemble_snapshot(
             "Not financial advice. Yahoo option quotes may be ~15 min delayed "
             "intraday and are Friday-close over the weekend. No order placement."
         ),
-        "errors": merged_errors[:8],
+        "errors": [e for e in merged_errors if not _is_chain_noise(e)][:8],
+        "optionMidsDelayed": bool(option_mids_delayed),
         "quotesSource": "signals" if quotes_pending else "v8_chart",
         "quotesStaleAgeSec": None if quotes_pending else yahoo.quotes_stale_age(),
         "quotesPending": quotes_pending,
@@ -1051,10 +1097,14 @@ def build_snapshot(publish=None) -> dict:
             )
             if publish:
                 publish(priced)
-        chains, chain_errors = _fetch_chains(_option_jobs(), CHAIN_BUDGET_SEC)
-        errors.extend(chain_errors)
+        chains, chain_misses = _fetch_chains(_option_jobs(), CHAIN_BUDGET_SEC)
         full = _assemble_snapshot(
-            box["quotes"], chains, _errs(True), quotes_pending=False, daily_levels=levels_now
+            box["quotes"],
+            chains,
+            _errs(True),
+            quotes_pending=False,
+            daily_levels=levels_now,
+            option_mids_delayed=chain_misses > 0,
         )
         if publish:
             publish(full)
