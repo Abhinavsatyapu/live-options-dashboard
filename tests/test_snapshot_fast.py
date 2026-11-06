@@ -170,9 +170,13 @@ class SnapshotShellTests(unittest.TestCase):
                 self.assertGreater(len(again.json()["weeklyBullish"]), 0)
         finally:
             release.set()
+            for _ in range(100):
+                with appmod._refresh_lock:
+                    busy = appmod._refreshing
+                if not busy:
+                    break
+                time.sleep(0.05)
             appmod.build_snapshot = real
-            with appmod._refresh_lock:
-                appmod._refreshing = False
 
 
 if __name__ == "__main__":
