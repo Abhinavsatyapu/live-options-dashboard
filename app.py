@@ -953,7 +953,7 @@ def _assemble_snapshot(
         "intradayReversalsAsOf": intraday["intradayReversalsAsOf"],
         "intradayBullishRule": intraday["intradayBullishRule"],
         "intradayReversalsRule": intraday["intradayReversalsRule"],
-        "signalsAsOf": "2026-10-30 close",
+        "signalsAsOf": "2026-11-06 intraday (Reversals live; Weekly 2026-11-02 wtd provisional)",
         "backtestNote": (
             "Standing rule: bullish ONLY from Weekly; bearish ONLY from Reversals "
             "(Weekly BEARISH reads never used). Structures from BS backtest Sep14–Oct30 @ $1k equal risk: "
